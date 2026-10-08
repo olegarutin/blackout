@@ -1,0 +1,535 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# <xbar.title>Blackout</xbar.title>
+# <xbar.version>v2.0</xbar.version>
+# <xbar.author>Oleg Arutin</xbar.author>
+# <xbar.desc>Графік погодинних відключень: стан, відлік і сповіщення про зміни</xbar.desc>
+# <xbar.dependencies>ruby</xbar.dependencies>
+
+require 'json'
+require 'net/http'
+require 'uri'
+require 'fileutils'
+require 'digest'
+require 'date'
+require 'time'
+
+SELF = File.expand_path(__FILE__)
+
+OE_SRC = 'https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data'
+BK_SRC = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data'
+ALERTS = 'https://vadimklimenko.com/map/statuses.json'
+CACHE  = File.join(Dir.home, '.cache', 'blackout')
+CONFIG = File.join(Dir.home, '.config', 'blackout.json')
+STATE  = File.join(CACHE, 'state.json')
+TTL    = 55 # секунд — мережа раз на хвилину, джерело оновлюється раз на 5 хв
+
+REGIONS = {
+  'Cherkasyoblenergo'     => ['Черкаська обл.',     :oe, 'Черкаська область',         'https://www.cherkasyoblenergo.com/static/perelik-gpv'],
+  'Chernihivoblenergo'    => ['Чернігівська обл.',  :oe, 'Чернігівська область',      'https://www.chernihiv.energy/'],
+  'Kharkivoblenerho'      => ['Харківська обл.',    :oe, 'Харківська область',        'https://www.hoe.com.ua/'],
+  'Khmelnytskoblenerho'   => ['Хмельницька обл.',   :oe, 'Хмельницька область',       'https://www.hoe.com.ua/'],
+  'Lvivoblenerho'         => ['Львівська обл.',     :oe, 'Львівська область',         'https://loe.lviv.ua/'],
+  'Poltavaoblenergo'      => ['Полтавська обл.',    :oe, 'Полтавська область',        'https://www.poe.pl.ua/'],
+  'Prykarpattiaoblenerho' => ['Івано-Франківська',  :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/'],
+  'Rivneoblenergo'        => ['Рівненська обл.',    :oe, 'Рівненська область',        'https://www.roe.vsei.ua/'],
+  'Ternopiloblenerho'     => ['Тернопільська обл.', :oe, 'Тернопільська область',     'https://www.toe.com.ua/'],
+  'Zakarpattiaoblenerho'  => ['Закарпатська обл.',  :oe, 'Закарпатська область',      'https://www.zakarpat.energy/'],
+  'Zaporizhzhiaoblenergo' => ['Запорізька обл.',    :oe, 'Запорізька область',        'https://www.zoe.com.ua/'],
+  'Zhytomyroblenergo'     => ['Житомирська обл.',   :oe, 'Житомирська область',       'https://www.ztoe.com.ua/unhooking-search.php'],
+  'kyiv'                  => ['Київ',               :bk, 'м. Київ',                   'https://kyiv.yasno.com.ua/schedule-turn-off-electricity'],
+  'kyiv-region'           => ['Київська обл.',      :bk, 'Київська область',          'https://www.dtek-krem.com.ua/ua/shutdowns'],
+  'dnipro'                => ['Дніпро та обл.',     :bk, 'Дніпропетровська область',  'https://www.dtek-dnem.com.ua/ua/shutdowns'],
+  'odesa'                 => ['Одеса та обл.',      :bk, 'Одеська область',           'https://www.dtek-oem.com.ua/ua/shutdowns']
+}.freeze
+
+SRC = { oe: OE_SRC, bk: BK_SRC }.freeze
+
+# ── Конфіг ──────────────────────────────────────────────────────────
+
+def load_config
+  File.exist?(CONFIG) ? JSON.parse(File.read(CONFIG)) : {}
+rescue StandardError
+  {}
+end
+
+def save_config(cfg)
+  FileUtils.mkdir_p(File.dirname(CONFIG))
+  File.write(CONFIG, JSON.pretty_generate(cfg))
+end
+
+cfg = load_config
+
+case ARGV[0]
+when '--set'
+  exit unless REGIONS.key?(ARGV[1]) && ARGV[2].to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)
+
+  cfg['region'] = ARGV[1]
+  cfg['queue']  = ARGV[2]
+  save_config(cfg)
+  exit
+when '--warn'
+  cfg['warn_minutes'] = ARGV[1].to_i.clamp(1, 720)
+  save_config(cfg)
+  exit
+when '--notify'
+  cfg['notify'] = (ARGV[1] == 'on')
+  save_config(cfg)
+  exit
+when '--power'
+  cfg['power_check'] = (ARGV[1] == 'on')
+  save_config(cfg)
+  exit
+when '--alerts'
+  cfg['alerts'] = (ARGV[1] == 'on')
+  save_config(cfg)
+  exit
+end
+
+# Регіон стає частиною URL і шляху до кешу, тож приймаємо лише відомі ключі.
+# Чергу — лише за суворим шаблоном: вона потрапляє у текст меню,
+# а SwiftBar читає '|' як початок параметрів.
+raw_region = ENV['BLACKOUT_REGION'] || cfg['region'] || 'Cherkasyoblenergo'
+raw_queue  = ENV['BLACKOUT_QUEUE']  || cfg['queue']  || 'GPV1.1'
+
+REGION = REGIONS.key?(raw_region) ? raw_region : 'Cherkasyoblenergo'
+QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
+WARN   = (cfg['warn_minutes'] || 15).to_i
+NOTIFY = cfg.fetch('notify', true)
+POWER  = cfg.fetch('power_check', true)
+ALERTS_ON = cfg.fetch('alerts', true)
+
+# ── Дані ────────────────────────────────────────────────────────────
+
+def fetch_data(region)
+  FileUtils.mkdir_p(CACHE)
+  path = File.join(CACHE, "#{region}.json")
+
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+    return [JSON.parse(File.read(path)), :cache]
+  end
+
+  src = SRC[REGIONS.dig(region, 1)] || OE_SRC
+  body = Net::HTTP.get(URI("#{src}/#{region}.json"))
+  parsed = JSON.parse(body)
+  File.write(path, body)
+  [parsed, :fresh]
+rescue StandardError
+  File.exist?(path) ? [JSON.parse(File.read(path)), :stale] : [nil, :error]
+end
+
+# Година N у джерелі = інтервал [N-1, N)
+def hours_for(data, queue, day_key)
+  raw = data.dig('fact', 'data', day_key, queue)
+  return nil unless raw
+
+  # 'yes' — світло є, 'no' — немає, 'first' — немає в першій половині години
+  (1..24).map { |h| raw[h.to_s] == 'yes' }
+end
+
+def segments(hours)
+  hours.each_with_index.chunk_while { |(a, _), (b, _)| a == b }
+       .map { |chunk| [chunk.first[1], chunk.last[1] + 1, chunk.first[0]] }
+end
+
+def minutes_until_change(today, tomorrow, now)
+  idx = now.hour
+  state = today[idx]
+  elapsed = now.hour * 60 + now.min
+
+  ((idx + 1)..23).each { |h| return (h * 60) - elapsed if today[h] != state }
+  return nil unless tomorrow
+
+  (0..23).each do |h|
+    return (24 * 60 - elapsed) + (h * 60) if tomorrow[h] != state
+  end
+  nil
+end
+
+# SwiftBar розділяє текст і параметри символом '|' —
+# чистимо все, що прийшло з мережі, щоб воно не могло підмінити атрибути
+def safe(str)
+  str.to_s.delete('|').strip
+end
+
+def fmt(minutes)
+  format('%d:%02d', minutes / 60, minutes % 60)
+end
+
+# ── Повітряна тривога ───────────────────────────────────────────────
+
+def fetch_alerts
+  FileUtils.mkdir_p(CACHE)
+  path = File.join(CACHE, 'alerts.json')
+
+  return JSON.parse(File.read(path)) if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+
+  body = Net::HTTP.get(URI(ALERTS))
+  JSON.parse(body).tap { File.write(path, body) }
+rescue StandardError
+  File.exist?(path) ? JSON.parse(File.read(path)) : nil
+end
+
+# Префікс у menu bar: 🔴 ракети · 🟡 дрони · '' якщо тихо
+def siren_prefix(alert)
+  case alert && alert[:level]
+  when nil      then ''
+  when 'yellow' then '🟡 '
+  else '🔴 '
+  end
+end
+
+def render_alert(alert)
+  unless alert
+    if ALERTS_ON && REGIONS.dig(REGION, 2)
+      puts '---'
+      puts '🟢 Тривоги немає | color=green size=12'
+    end
+    return
+  end
+
+  puts '---'
+  label, colour = case alert[:level]
+                  when 'yellow' then ['🟡 Тривога — дрони', 'orange']
+                  when 'red'    then ['🔴 Тривога — ракетна загроза', 'red']
+                  else               ['🔴 Повітряна тривога (рівень не вказано)', 'red']
+                  end
+  puts "#{label} | color=#{colour} size=14"
+
+  if alert[:since]
+    mins = ((Time.now - alert[:since]) / 60).to_i
+    puts "#{REGIONS.dig(REGION, 2)} · триває #{mins / 60} год #{mins % 60} хв | size=12 color=gray"
+  else
+    puts "#{REGIONS.dig(REGION, 2)} | size=12 color=gray"
+  end
+
+  if alert[:whole]
+    puts 'Уся область | size=11 color=gray'
+  elsif alert[:districts].any?
+    puts "Райони: #{safe(alert[:districts].join(', '))} | size=11 color=gray"
+  end
+  puts 'Жовтий — дрони · червоний — ракети | size=11 color=gray'
+end
+
+# ── Живлення ────────────────────────────────────────────────────────
+
+# Mac знає, чи є струм у розетці. Якщо графік каже «світло є»,
+# а ноут перейшов на батарею — схоже на аварійне відключення.
+def ac_power?
+  out = `pmset -g batt 2>/dev/null`
+  return nil if out.empty?
+
+  out.include?('AC Power')
+rescue StandardError
+  nil
+end
+
+# ── Сповіщення ──────────────────────────────────────────────────────
+
+def load_state
+  File.exist?(STATE) ? JSON.parse(File.read(STATE)) : {}
+rescue StandardError
+  {}
+end
+
+def save_state(st)
+  FileUtils.mkdir_p(CACHE)
+  File.write(STATE, JSON.generate(st))
+end
+
+def notify(title, message)
+  # Екрануємо зворотну косу й лапки, прибираємо переноси — інакше рядок
+  # може вирватись із літерала AppleScript
+  esc = lambda do |str|
+    str.to_s.gsub('\\', '\\\\\\\\').gsub('"', '\\\\"').delete("\n\r")
+  end
+  system('osascript', '-e',
+         %(display notification "#{esc.call(message)}" with title "#{esc.call(title)}" sound name "Submarine"))
+end
+
+# ── Збір ────────────────────────────────────────────────────────────
+
+alert = nil
+if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2))
+  if (al = fetch_alerts)
+    st = al.dig('states', oblast)
+    if st
+      # Тривогу можуть оголосити по всій області або лише по окремих районах —
+      # у другому випадку прапорець області лишається false
+      hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
+      if st['enabled'] || hot.any?
+        levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
+        # red важливіший за yellow; якщо рівня немає — за замовчуванням червоний
+        level = levels.include?('red') ? 'red' : levels.first
+        starts = ([st['enabled_at']] + hot.values.map { |v| v['enabled_at'] }).compact
+        since = starts.min ? Time.parse(starts.min) : nil
+        alert = { since: since, level: level, districts: hot.keys,
+                  whole: st['enabled'] }
+      end
+    end
+  end
+end
+
+data, status = fetch_data(REGION)
+
+if data.nil?
+  puts '🛑 немає даних'
+  puts '---'
+  puts 'Не вдалося завантажити графік | color=red'
+  puts "Відкрити джерело | href=#{SRC[REGIONS.dig(REGION, 1)]}/#{REGION}.json"
+  exit
+end
+
+raw_days = data.dig('fact', 'data')
+# Коли відключень немає, джерело інколи віддає порожній масив замість об'єкта
+raw_days = nil unless raw_days.is_a?(Hash)
+day_keys = (raw_days&.keys || []).sort_by(&:to_i)
+
+if day_keys.empty?
+  puts "#{siren_prefix(alert)}💡"
+  puts '---'
+  puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
+  puts 'Графіків немає | color=green size=14'
+  puts 'Джерело не публікує відключень для цього регіону | size=11 color=gray'
+  puts "Оновлено: #{safe(data['lastUpdated'])} | size=11 color=gray"
+  render_alert(alert)
+  exit
+end
+
+# fact.today інколи вказує на день, якого немає в data — тоді беремо найсвіжіший
+declared = data.dig('fact', 'today')&.to_s
+today_key = day_keys.include?(declared) ? declared : day_keys.last
+tomorrow_key = day_keys[day_keys.index(today_key) + 1]
+
+day_date = Time.at(today_key.to_i).to_date
+age = (Date.today - day_date).to_i
+STALE = age != 0
+# Немає даних саме на сьогодні, але відхилення невелике:
+# графік ще не опублікували, скасували, або джерело вже віддає завтрашній день.
+# Якщо відставання більше двох днів — джерело просто померло.
+UNKNOWN = STALE && age <= 2
+
+today    = hours_for(data, QUEUE, today_key)
+tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
+
+unless today
+  puts '🛑 немає черги'
+  puts '---'
+  puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
+  puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
+  exit
+end
+
+now  = Time.now
+on   = today[now.hour]
+left = minutes_until_change(today, tomorrow, now)
+
+# ── Перевірка змін і попередження ───────────────────────────────────
+
+state = load_state
+
+ac = POWER && !STALE ? ac_power? : nil
+
+# Одного лише стану батареї недостатньо: ноут може бути просто не ввімкнений
+# у розетку. Справжнє відключення — це ПЕРЕХІД з мережі на батарею.
+# Тому дивимось, чи був ноут у мережі нещодавно.
+RECENT = 20 * 60 # секунд
+
+now_ts = Time.now.to_i
+state['ac_last'] = now_ts if ac
+was_plugged = state['ac_last'] && (now_ts - state['ac_last']) < RECENT
+
+mismatch =
+  if ac.nil?
+    nil
+  elsif on && !ac
+    # графік обіцяє світло, живлення немає — аварійне, але лише якщо
+    # ноут був у розетці нещодавно (інакше він просто не підключений)
+    was_plugged ? true : nil
+  elsif !on && ac
+    # графік каже «немає», а струм є — дали раніше
+    true
+  else
+    false
+  end
+key = "#{REGION}/#{QUEUE}/#{today_key}"
+digest = Digest::SHA256.hexdigest(today.map { |b| b ? '1' : '0' }.join)
+
+if NOTIFY && !STALE
+  # 1. Графік на сьогодні змінився
+  if state['key'] == key && state['digest'] && state['digest'] != digest
+    changed = segments(today).reject { |_, _, lit| lit }
+                             .map { |f, t, _| format('%02d–%02d', f, t) }.join(', ')
+    notify('Графік змінився', "Черга #{QUEUE.sub('GPV', '')} · без світла: #{changed}")
+  end
+
+  # 2. Живлення розійшлося з графіком
+  if mismatch
+    flag = "#{key}/#{on}/#{ac}"
+    if state['mismatch'] != flag
+      if on
+        notify('Світло зникло поза графіком', 'За графіком мало бути. Схоже на аварійне відключення.')
+      else
+        notify('Світло з\'явилось раніше', 'За графіком ще має бути відключення.')
+      end
+      state['mismatch'] = flag
+    end
+  elsif mismatch == false
+    state['mismatch'] = nil
+  end
+
+  # 3. Скоро зміна стану
+  if left && left <= WARN
+    slot = "#{key}/#{on ? 'off' : 'on'}/#{(now.to_i + left * 60) / 3600}"
+    if state['warned'] != slot
+      if on
+        notify('Скоро вимкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
+      else
+        notify('Скоро увімкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
+      end
+      state['warned'] = slot
+    end
+  end
+end
+
+state['key'] = key
+state['digest'] = digest
+save_state(state)
+
+# ── Menu bar ────────────────────────────────────────────────────────
+
+region_name = REGIONS.dig(REGION, 0) || REGION
+region_url  = REGIONS.dig(REGION, 3)
+
+if UNKNOWN
+  puts '❔'
+  puts '---'
+  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+  puts 'Графіка на сьогодні немає | color=orange size=14'
+  if age.negative?
+    puts "Джерело віддає дані на #{day_date.strftime('%d.%m')} | size=12 color=gray"
+  else
+    puts "Останній відомий — за #{day_date.strftime('%d.%m')} | size=12 color=gray"
+    puts 'Або ще не опублікували, або відключення скасували | size=11 color=gray'
+  end
+elsif STALE
+  puts "🛑 #{day_date.strftime('%d.%m')}"
+  puts '---'
+  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+  puts 'Дані застарілі | color=red size=14'
+  puts "Графік за #{day_date.strftime('%d.%m.%Y')} — #{age} дн. тому | color=red size=12"
+  puts 'Джерело не оновлює цей регіон. Не покладайся на розклад нижче. | size=11 color=gray'
+else
+  # 💡 світло є · 🕯️ немає за графіком · 🚨 аварійне (графік обіцяв, а світла нема)
+  icon = if mismatch && on then '🚨'
+         else (mismatch ? ac : on) ? '💡' : '🕯️'
+         end
+  # Під час аварійного графік не діє, тож відлік за ним показувати нечесно
+  urgent = left && left <= WARN ? ' ⏳' : ''
+  siren = siren_prefix(alert)
+  puts(if mismatch && on then "#{siren}#{icon}"
+       elsif left then "#{siren}#{icon} #{fmt(left)}#{urgent}"
+       else "#{siren}#{icon}"
+       end)
+  puts '---'
+  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+  # Головний рядок завжди починається з реальності, а не з графіка
+  if mismatch && on
+    puts 'Світла немає — схоже на аварійне | color=red size=14'
+    puts "За графіком мало бути світло до #{fmt(left)} | size=12 color=gray" if left
+    puts 'Коли дадуть — графік не підкаже | size=11 color=gray'
+  elsif mismatch
+    puts 'Світло є | color=green size=14'
+    puts(left ? "Дали раніше — за графіком ще #{fmt(left)} без світла | size=12 color=gray"
+              : 'Дали раніше за графік | size=12 color=gray')
+  elsif on
+    puts(if left then "Світло є · вимкнуть через #{fmt(left)} | color=green size=14"
+         elsif today.all? then 'Світло є · відключень сьогодні немає | color=green size=14'
+         else 'Світло є · більше відключень сьогодні не буде | color=green size=14'
+         end)
+  else
+    puts(left ? "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
+              : 'Світла немає | color=red size=14')
+  end
+
+  if ac.nil? && POWER && !was_plugged
+    puts 'Ноут давно не в розетці — звірка з живленням неактивна | size=11 color=gray'
+  end
+end
+
+puts '---'
+render_alert(alert)
+
+label = if UNKNOWN then "Останній графік · #{day_date.strftime('%d.%m')}"
+        elsif STALE then day_date.strftime('%d.%m.%Y')
+        else 'Сьогодні'
+        end
+puts "#{label} | size=12 color=gray"
+if today.all?
+  puts '● Відключень немає | color=green size=13 font=Menlo'
+end
+segments(today).each do |from, to, lit|
+  next if today.all?
+
+  here = !STALE && (from..to - 1).cover?(now.hour) ? '  ←' : ''
+  puts format('%s  %02d:00 – %02d:00%s | color=%s font=Menlo size=13',
+              lit ? '●' : '○', from, to, here, lit ? 'green' : 'red')
+end
+
+puts '---'
+puts 'Завтра | size=12 color=gray'
+
+if tomorrow.nil?
+  puts 'Графіка ще немає | size=13 color=gray'
+  puts 'Зазвичай публікують увечері напередодні | size=11 color=gray'
+elsif tomorrow.all?
+  puts '● Відключень немає | color=green size=13 font=Menlo'
+else
+  segments(tomorrow).each do |from, to, lit|
+    puts format('%s  %02d:00 – %02d:00 | color=%s font=Menlo size=13',
+                lit ? '●' : '○', from, to, lit ? 'green' : 'red')
+  end
+end
+
+# ── Налаштування ────────────────────────────────────────────────────
+
+puts '---'
+updated = safe(data.dig('fact', 'update') || data['lastUpdated'])
+mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
+puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
+
+puts 'Налаштування | size=11 color=gray'
+
+puts '--Регіон і черга | size=11'
+REGIONS.each_key do |id|
+  puts "----#{id == REGION ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
+  groups = if id == REGION
+             (raw_days&.dig(today_key) || {}).keys
+           else
+             (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
+           end
+  groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.each do |k|
+    sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
+    puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=#{SELF} " \
+         "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
+  end
+end
+
+puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
+
+puts "--#{POWER ? '✓ ' : ''}Звіряти з живленням ноута | size=11 bash=#{SELF} " \
+     "terminal=false refresh=true param1=--power param2=#{POWER ? 'off' : 'on'}"
+puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=#{SELF} " \
+     "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
+puts '--Сповіщення | size=11'
+puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=#{SELF} terminal=false " \
+     "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
+puts '----Попереджати за | size=11'
+[5, 10, 15, 30, 60].each do |m|
+  puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=#{SELF} " \
+       "terminal=false refresh=true param1=--warn param2=#{m}"
+end
+
+puts "Оновити зараз | refresh=true size=11"
+puts 'Джерело даних | size=11 href=https://github.com/yaroslav2901/OE_OUTAGE_DATA'
