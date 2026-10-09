@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 2.6 — штатний Ruby у macOS, нижня межа сумісності.
+        # 3.4 — те, що стоїть у більшості розробників.
+        ruby: ['2.6', '3.4']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+
+      - name: Синтаксис
+        run: ruby -c plugin/blackout.1m.rb
+
+      - name: Тести
+        run: ruby test/test_blackout.rb
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: RuboCop
+        run: |
+          gem install rubocop --no-document
+          rubocop plugin/ test/ --format simple
+        continue-on-error: true

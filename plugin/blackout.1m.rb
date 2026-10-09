@@ -23,7 +23,10 @@ ALERTS = 'https://vadimklimenko.com/map/statuses.json'
 CACHE  = File.join(Dir.home, '.cache', 'blackout')
 CONFIG = File.join(Dir.home, '.config', 'blackout.json')
 STATE  = File.join(CACHE, 'state.json')
-TTL    = 55 # секунд — мережа раз на хвилину, джерело оновлюється раз на 5 хв
+# Джерело графіків оновлюється раз на 5 хв — частіше за нього не дізнаємось.
+# Тривоги важливіші за часом, тож перевіряємо щохвилини.
+TTL_DATA  = 170
+TTL_ALERT = 55
 
 REGIONS = {
   'Cherkasyoblenergo'     => ['Черкаська обл.',     :oe, 'Черкаська область',         'https://www.cherkasyoblenergo.com/static/perelik-gpv'],
@@ -108,19 +111,38 @@ READ_TIME = 8               # секунд на читання відповід�
 
 # Net::HTTP.get не має таймаутів: зависле з'єднання тримало б процес вічно,
 # а SwiftBar щохвилини запускає новий. Тому власний виклик із обмеженнями.
-def http_get(url)
+# Умовний запит: якщо дані не змінились, сервер відповідає 304 без тіла.
+# Київський файл важить 300 КБ, тож це різниця між 475 МБ і кількома МБ на добу.
+# Повертає [тіло або nil, новий etag].
+def http_get(url, etag = nil)
   uri = URI(url)
   raise "refusing non-https url: #{uri.scheme}" unless uri.scheme == 'https'
 
   Net::HTTP.start(uri.host, uri.port, use_ssl: true,
                                       open_timeout: OPEN_TIME,
                                       read_timeout: READ_TIME) do |http|
-    res = http.get(uri.request_uri)
+    req = Net::HTTP::Get.new(uri.request_uri)
+    req['If-None-Match'] = etag if etag
+    res = http.request(req)
+
+    return [nil, etag] if res.is_a?(Net::HTTPNotModified)
     raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
     raise 'response too large' if res.body.bytesize > MAX_BODY
 
-    res.body
+    [res.body, res['etag']]
   end
+end
+
+def read_etag(path)
+  File.exist?("#{path}.etag") ? File.read("#{path}.etag") : nil
+rescue StandardError
+  nil
+end
+
+def write_etag(path, etag)
+  etag ? File.write("#{path}.etag", etag) : FileUtils.rm_f("#{path}.etag")
+rescue StandardError
+  nil
 end
 
 # Читання кешу теж може впасти на пошкодженому файлі
@@ -155,16 +177,25 @@ def fetch_data(region)
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, "#{region}.json")
 
-  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
     cached = read_cache(path)
     return [cached, :cache] if cached
   end
 
-  body = http_get("#{SRC[REGIONS.dig(region, 1)] || OE_SRC}/#{region}.json")
+  body, etag = http_get("#{SRC[REGIONS.dig(region, 1)] || OE_SRC}/#{region}.json",
+                        read_etag(path))
+
+  # 304 — дані ті самі, лише відсуваємо час наступної перевірки
+  if body.nil?
+    FileUtils.touch(path)
+    return [read_cache(path), :cache]
+  end
+
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless valid_schedule?(parsed)
 
   File.write(path, body)
+  write_etag(path, etag)
   [parsed, :fresh]
 rescue StandardError
   # Свіжі дані не прийшли або не пройшли перевірку — останні відомі
@@ -216,16 +247,23 @@ def fetch_alerts
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, 'alerts.json')
 
-  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_ALERT
     cached = read_cache(path)
     return cached if cached
   end
 
-  body = http_get(ALERTS)
+  body, etag = http_get(ALERTS, read_etag(path))
+
+  if body.nil?
+    FileUtils.touch(path)
+    return read_cache(path)
+  end
+
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless parsed.is_a?(Hash) && parsed['states'].is_a?(Hash)
 
   File.write(path, body)
+  write_etag(path, etag)
   parsed
 rescue StandardError
   File.exist?(path) ? read_cache(path) : nil
