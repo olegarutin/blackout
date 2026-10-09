@@ -102,21 +102,74 @@ ALERTS_ON = cfg.fetch('alerts', true)
 
 # ── Дані ────────────────────────────────────────────────────────────
 
+MAX_BODY  = 2 * 1024 * 1024 # 2 МБ — реальні файли важать 15–300 КБ
+OPEN_TIME = 5               # секунд на встановлення з'єднання
+READ_TIME = 8               # секунд на читання відповіді
+
+# Net::HTTP.get не має таймаутів: зависле з'єднання тримало б процес вічно,
+# а SwiftBar щохвилини запускає новий. Тому власний виклик із обмеженнями.
+def http_get(url)
+  uri = URI(url)
+  raise "refusing non-https url: #{uri.scheme}" unless uri.scheme == 'https'
+
+  Net::HTTP.start(uri.host, uri.port, use_ssl: true,
+                                      open_timeout: OPEN_TIME,
+                                      read_timeout: READ_TIME) do |http|
+    res = http.get(uri.request_uri)
+    raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
+    raise 'response too large' if res.body.bytesize > MAX_BODY
+
+    res.body
+  end
+end
+
+# Читання кешу теж може впасти на пошкодженому файлі
+def read_cache(path)
+  JSON.parse(File.read(path))
+rescue StandardError
+  nil
+end
+
+# Дані приходять із чужого репозиторію. Приймаємо лише те, що розуміємо:
+# невідома структура — краще сказати про це, ніж показати сміття як графік.
+def valid_schedule?(doc)
+  return false unless doc.is_a?(Hash)
+
+  days = doc.dig('fact', 'data')
+  return true if days.nil? || (days.respond_to?(:empty?) && days.empty?)
+  return false unless days.is_a?(Hash)
+
+  days.all? do |day, groups|
+    next false unless day.to_s.match?(/\A\d{9,11}\z/) && groups.is_a?(Hash)
+
+    groups.all? do |name, hours|
+      name.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) &&
+        hours.is_a?(Hash) &&
+        hours.keys.all? { |h| (1..24).cover?(h.to_i) } &&
+        hours.values.all? { |v| %w[yes no first second].include?(v) }
+    end
+  end
+end
+
 def fetch_data(region)
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, "#{region}.json")
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
-    return [JSON.parse(File.read(path)), :cache]
+    cached = read_cache(path)
+    return [cached, :cache] if cached
   end
 
-  src = SRC[REGIONS.dig(region, 1)] || OE_SRC
-  body = Net::HTTP.get(URI("#{src}/#{region}.json"))
+  body = http_get("#{SRC[REGIONS.dig(region, 1)] || OE_SRC}/#{region}.json")
   parsed = JSON.parse(body)
+  raise 'unexpected schema' unless valid_schedule?(parsed)
+
   File.write(path, body)
   [parsed, :fresh]
 rescue StandardError
-  File.exist?(path) ? [JSON.parse(File.read(path)), :stale] : [nil, :error]
+  # Свіжі дані не прийшли або не пройшли перевірку — останні відомі
+  old = File.exist?(path) ? read_cache(path) : nil
+  old ? [old, :stale] : [nil, :error]
 end
 
 # Година N у джерелі = інтервал [N-1, N)
@@ -163,21 +216,28 @@ def fetch_alerts
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, 'alerts.json')
 
-  return JSON.parse(File.read(path)) if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL
+    cached = read_cache(path)
+    return cached if cached
+  end
 
-  body = Net::HTTP.get(URI(ALERTS))
-  JSON.parse(body).tap { File.write(path, body) }
+  body = http_get(ALERTS)
+  parsed = JSON.parse(body)
+  raise 'unexpected schema' unless parsed.is_a?(Hash) && parsed['states'].is_a?(Hash)
+
+  File.write(path, body)
+  parsed
 rescue StandardError
-  File.exist?(path) ? JSON.parse(File.read(path)) : nil
+  File.exist?(path) ? read_cache(path) : nil
 end
 
 # Префікс у menu bar: 🔴 ракети · 🟡 дрони · '' якщо тихо
 def siren_prefix(alert)
-  case alert && alert[:level]
-  when nil      then ''
-  when 'yellow' then '🟡 '
-  else '🔴 '
-  end
+  return '' unless alert
+
+  # Рівень може бути відсутній — документація alerts.in.ua каже
+  # трактувати таку тривогу як червону, а не ховати її
+  alert[:level] == 'yellow' ? '🟡 ' : '🔴 '
 end
 
 def render_alert(alert)
@@ -250,286 +310,305 @@ end
 
 # ── Збір ────────────────────────────────────────────────────────────
 
-alert = nil
-if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2))
-  if (al = fetch_alerts)
-    st = al.dig('states', oblast)
-    if st
-      # Тривогу можуть оголосити по всій області або лише по окремих районах —
-      # у другому випадку прапорець області лишається false
-      hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
-      if st['enabled'] || hot.any?
-        levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
-        # red важливіший за yellow; якщо рівня немає — за замовчуванням червоний
-        level = levels.include?('red') ? 'red' : levels.first
-        starts = ([st['enabled_at']] + hot.values.map { |v| v['enabled_at'] }).compact
-        since = starts.min ? Time.parse(starts.min) : nil
-        alert = { since: since, level: level, districts: hot.keys,
-                  whole: st['enabled'] }
-      end
-    end
-  end
-end
+# Остання лінія оборони: несподівана помилка не має показувати стек трейс
+# у menu bar. Краще один зрозумілий рядок, ніж сторінка Ruby-виводу.
+begin
 
-data, status = fetch_data(REGION)
-
-if data.nil?
-  puts '🛑 немає даних'
-  puts '---'
-  puts 'Не вдалося завантажити графік | color=red'
-  puts "Відкрити джерело | href=#{SRC[REGIONS.dig(REGION, 1)]}/#{REGION}.json"
-  exit
-end
-
-raw_days = data.dig('fact', 'data')
-# Коли відключень немає, джерело інколи віддає порожній масив замість об'єкта
-raw_days = nil unless raw_days.is_a?(Hash)
-day_keys = (raw_days&.keys || []).sort_by(&:to_i)
-
-if day_keys.empty?
-  puts "#{siren_prefix(alert)}💡"
-  puts '---'
-  puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
-  puts 'Графіків немає | color=green size=14'
-  puts 'Джерело не публікує відключень для цього регіону | size=11 color=gray'
-  puts "Оновлено: #{safe(data['lastUpdated'])} | size=11 color=gray"
-  render_alert(alert)
-  exit
-end
-
-# fact.today інколи вказує на день, якого немає в data — тоді беремо найсвіжіший
-declared = data.dig('fact', 'today')&.to_s
-today_key = day_keys.include?(declared) ? declared : day_keys.last
-tomorrow_key = day_keys[day_keys.index(today_key) + 1]
-
-day_date = Time.at(today_key.to_i).to_date
-age = (Date.today - day_date).to_i
-STALE = age != 0
-# Немає даних саме на сьогодні, але відхилення невелике:
-# графік ще не опублікували, скасували, або джерело вже віддає завтрашній день.
-# Якщо відставання більше двох днів — джерело просто померло.
-UNKNOWN = STALE && age <= 2
-
-today    = hours_for(data, QUEUE, today_key)
-tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
-
-unless today
-  puts '🛑 немає черги'
-  puts '---'
-  puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
-  puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
-  exit
-end
-
-now  = Time.now
-on   = today[now.hour]
-left = minutes_until_change(today, tomorrow, now)
-
-# ── Перевірка змін і попередження ───────────────────────────────────
-
-state = load_state
-
-ac = POWER && !STALE ? ac_power? : nil
-
-# Одного лише стану батареї недостатньо: ноут може бути просто не ввімкнений
-# у розетку. Справжнє відключення — це ПЕРЕХІД з мережі на батарею.
-# Тому дивимось, чи був ноут у мережі нещодавно.
-RECENT = 20 * 60 # секунд
-
-now_ts = Time.now.to_i
-state['ac_last'] = now_ts if ac
-was_plugged = state['ac_last'] && (now_ts - state['ac_last']) < RECENT
-
-mismatch =
-  if ac.nil?
-    nil
-  elsif on && !ac
-    # графік обіцяє світло, живлення немає — аварійне, але лише якщо
-    # ноут був у розетці нещодавно (інакше він просто не підключений)
-    was_plugged ? true : nil
-  elsif !on && ac
-    # графік каже «немає», а струм є — дали раніше
-    true
-  else
-    false
-  end
-key = "#{REGION}/#{QUEUE}/#{today_key}"
-digest = Digest::SHA256.hexdigest(today.map { |b| b ? '1' : '0' }.join)
-
-if NOTIFY && !STALE
-  # 1. Графік на сьогодні змінився
-  if state['key'] == key && state['digest'] && state['digest'] != digest
-    changed = segments(today).reject { |_, _, lit| lit }
-                             .map { |f, t, _| format('%02d–%02d', f, t) }.join(', ')
-    notify('Графік змінився', "Черга #{QUEUE.sub('GPV', '')} · без світла: #{changed}")
-  end
-
-  # 2. Живлення розійшлося з графіком
-  if mismatch
-    flag = "#{key}/#{on}/#{ac}"
-    if state['mismatch'] != flag
-      if on
-        notify('Світло зникло поза графіком', 'За графіком мало бути. Схоже на аварійне відключення.')
-      else
-        notify('Світло з\'явилось раніше', 'За графіком ще має бути відключення.')
-      end
-      state['mismatch'] = flag
-    end
-  elsif mismatch == false
-    state['mismatch'] = nil
-  end
-
-  # 3. Скоро зміна стану
-  if left && left <= WARN
-    slot = "#{key}/#{on ? 'off' : 'on'}/#{(now.to_i + left * 60) / 3600}"
-    if state['warned'] != slot
-      if on
-        notify('Скоро вимкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
-      else
-        notify('Скоро увімкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
-      end
-      state['warned'] = slot
-    end
-  end
-end
-
-state['key'] = key
-state['digest'] = digest
-save_state(state)
-
-# ── Menu bar ────────────────────────────────────────────────────────
-
-region_name = REGIONS.dig(REGION, 0) || REGION
-region_url  = REGIONS.dig(REGION, 3)
-
-if UNKNOWN
-  puts '❔'
-  puts '---'
-  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
-  puts 'Графіка на сьогодні немає | color=orange size=14'
-  if age.negative?
-    puts "Джерело віддає дані на #{day_date.strftime('%d.%m')} | size=12 color=gray"
-  else
-    puts "Останній відомий — за #{day_date.strftime('%d.%m')} | size=12 color=gray"
-    puts 'Або ще не опублікували, або відключення скасували | size=11 color=gray'
-  end
-elsif STALE
-  puts "🛑 #{day_date.strftime('%d.%m')}"
-  puts '---'
-  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
-  puts 'Дані застарілі | color=red size=14'
-  puts "Графік за #{day_date.strftime('%d.%m.%Y')} — #{age} дн. тому | color=red size=12"
-  puts 'Джерело не оновлює цей регіон. Не покладайся на розклад нижче. | size=11 color=gray'
-else
-  # 💡 світло є · 🕯️ немає за графіком · 🚨 аварійне (графік обіцяв, а світла нема)
-  icon = if mismatch && on then '🚨'
-         else (mismatch ? ac : on) ? '💡' : '🕯️'
-         end
-  # Під час аварійного графік не діє, тож відлік за ним показувати нечесно
-  urgent = left && left <= WARN ? ' ⏳' : ''
-  siren = siren_prefix(alert)
-  puts(if mismatch && on then "#{siren}#{icon}"
-       elsif left then "#{siren}#{icon} #{fmt(left)}#{urgent}"
-       else "#{siren}#{icon}"
-       end)
-  puts '---'
-  puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
-  # Головний рядок завжди починається з реальності, а не з графіка
-  if mismatch && on
-    puts 'Світла немає — схоже на аварійне | color=red size=14'
-    puts "За графіком мало бути світло до #{fmt(left)} | size=12 color=gray" if left
-    puts 'Коли дадуть — графік не підкаже | size=11 color=gray'
-  elsif mismatch
-    puts 'Світло є | color=green size=14'
-    puts(left ? "Дали раніше — за графіком ще #{fmt(left)} без світла | size=12 color=gray"
-              : 'Дали раніше за графік | size=12 color=gray')
-  elsif on
-    puts(if left then "Світло є · вимкнуть через #{fmt(left)} | color=green size=14"
-         elsif today.all? then 'Світло є · відключень сьогодні немає | color=green size=14'
-         else 'Світло є · більше відключень сьогодні не буде | color=green size=14'
-         end)
-  else
-    puts(left ? "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
-              : 'Світла немає | color=red size=14')
-  end
-
-  if ac.nil? && POWER && !was_plugged
-    puts 'Ноут давно не в розетці — звірка з живленням неактивна | size=11 color=gray'
-  end
-end
-
-puts '---'
-render_alert(alert)
-
-label = if UNKNOWN then "Останній графік · #{day_date.strftime('%d.%m')}"
-        elsif STALE then day_date.strftime('%d.%m.%Y')
-        else 'Сьогодні'
+  alert = nil
+  if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2))
+    if (al = fetch_alerts)
+      st = al.dig('states', oblast)
+      if st
+        # Тривогу можуть оголосити по всій області або лише по окремих районах —
+        # у другому випадку прапорець області лишається false
+        hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
+        if st['enabled'] || hot.any?
+          levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
+          # red важливіший за yellow; якщо рівня немає — за замовчуванням червоний
+          level = levels.include?('red') ? 'red' : levels.first
+          starts = ([st['enabled_at']] + hot.values.map { |v| v['enabled_at'] }).compact
+          # Дата приходить із мережі — зіпсоване значення не має класти застосунок
+          since = begin
+            starts.min ? Time.parse(starts.min) : nil
+          rescue ArgumentError, TypeError
+            nil
+          end
+          alert = { since: since, level: level, districts: hot.keys,
+                    whole: st['enabled'] }
         end
-puts "#{label} | size=12 color=gray"
-if today.all?
-  puts '● Відключень немає | color=green size=13 font=Menlo'
-end
-segments(today).each do |from, to, lit|
-  next if today.all?
-
-  here = !STALE && (from..to - 1).cover?(now.hour) ? '  ←' : ''
-  puts format('%s  %02d:00 – %02d:00%s | color=%s font=Menlo size=13',
-              lit ? '●' : '○', from, to, here, lit ? 'green' : 'red')
-end
-
-puts '---'
-puts 'Завтра | size=12 color=gray'
-
-if tomorrow.nil?
-  puts 'Графіка ще немає | size=13 color=gray'
-  puts 'Зазвичай публікують увечері напередодні | size=11 color=gray'
-elsif tomorrow.all?
-  puts '● Відключень немає | color=green size=13 font=Menlo'
-else
-  segments(tomorrow).each do |from, to, lit|
-    puts format('%s  %02d:00 – %02d:00 | color=%s font=Menlo size=13',
-                lit ? '●' : '○', from, to, lit ? 'green' : 'red')
+      end
+    end
   end
-end
 
-# ── Налаштування ────────────────────────────────────────────────────
+  data, status = fetch_data(REGION)
 
-puts '---'
-updated = safe(data.dig('fact', 'update') || data['lastUpdated'])
-mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
-puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
+  if data.nil?
+    puts '🛑 немає даних'
+    puts '---'
+    puts 'Не вдалося завантажити графік | color=red'
+    puts "Відкрити джерело | href=#{SRC[REGIONS.dig(REGION, 1)]}/#{REGION}.json"
+    exit
+  end
 
-puts 'Налаштування | size=11 color=gray'
+  raw_days = data.dig('fact', 'data')
+  # Коли відключень немає, джерело інколи віддає порожній масив замість об'єкта
+  raw_days = nil unless raw_days.is_a?(Hash)
+  day_keys = (raw_days&.keys || []).sort_by(&:to_i)
 
-puts '--Регіон і черга | size=11'
-REGIONS.each_key do |id|
-  puts "----#{id == REGION ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
-  groups = if id == REGION
-             (raw_days&.dig(today_key) || {}).keys
-           else
-             (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
+  if day_keys.empty?
+    puts "#{siren_prefix(alert)}💡"
+    puts '---'
+    puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
+    puts 'Графіків немає | color=green size=14'
+    puts 'Джерело не публікує відключень для цього регіону | size=11 color=gray'
+    puts "Оновлено: #{safe(data['lastUpdated'])} | size=11 color=gray"
+    render_alert(alert)
+    exit
+  end
+
+  # fact.today інколи вказує на день, якого немає в data — тоді беремо найсвіжіший
+  declared = data.dig('fact', 'today')&.to_s
+  today_key = day_keys.include?(declared) ? declared : day_keys.last
+  tomorrow_key = day_keys[day_keys.index(today_key) + 1]
+
+  day_date = Time.at(today_key.to_i).to_date
+  age = (Date.today - day_date).to_i
+  STALE = age != 0
+  # Немає даних саме на сьогодні, але відхилення невелике:
+  # графік ще не опублікували, скасували, або джерело вже віддає завтрашній день.
+  # Якщо відставання більше двох днів — джерело просто померло.
+  UNKNOWN = STALE && age <= 2
+
+  today    = hours_for(data, QUEUE, today_key)
+  tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
+
+  unless today
+    puts '🛑 немає черги'
+    puts '---'
+    puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
+    puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
+    exit
+  end
+
+  now  = Time.now
+  on   = today[now.hour]
+  left = minutes_until_change(today, tomorrow, now)
+
+  # ── Перевірка змін і попередження ───────────────────────────────────
+
+  state = load_state
+
+  ac = POWER && !STALE ? ac_power? : nil
+
+  # Одного лише стану батареї недостатньо: ноут може бути просто не ввімкнений
+  # у розетку. Справжнє відключення — це ПЕРЕХІД з мережі на батарею.
+  # Тому дивимось, чи був ноут у мережі нещодавно.
+  RECENT = 20 * 60 # секунд
+
+  now_ts = Time.now.to_i
+  state['ac_last'] = now_ts if ac
+  was_plugged = state['ac_last'] && (now_ts - state['ac_last']) < RECENT
+
+  mismatch =
+    if ac.nil?
+      nil
+    elsif on && !ac
+      # графік обіцяє світло, живлення немає — аварійне, але лише якщо
+      # ноут був у розетці нещодавно (інакше він просто не підключений)
+      was_plugged ? true : nil
+    elsif !on && ac
+      # графік каже «немає», а струм є — дали раніше
+      true
+    else
+      false
+    end
+  key = "#{REGION}/#{QUEUE}/#{today_key}"
+  digest = Digest::SHA256.hexdigest(today.map { |b| b ? '1' : '0' }.join)
+
+  if NOTIFY && !STALE
+    # 1. Графік на сьогодні змінився
+    if state['key'] == key && state['digest'] && state['digest'] != digest
+      changed = segments(today).reject { |_, _, lit| lit }
+                               .map { |f, t, _| format('%02d–%02d', f, t) }.join(', ')
+      notify('Графік змінився', "Черга #{QUEUE.sub('GPV', '')} · без світла: #{changed}")
+    end
+
+    # 2. Живлення розійшлося з графіком
+    if mismatch
+      flag = "#{key}/#{on}/#{ac}"
+      if state['mismatch'] != flag
+        if on
+          notify('Світло зникло поза графіком', 'За графіком мало бути. Схоже на аварійне відключення.')
+        else
+          notify('Світло з\'явилось раніше', 'За графіком ще має бути відключення.')
+        end
+        state['mismatch'] = flag
+      end
+    elsif mismatch == false
+      state['mismatch'] = nil
+    end
+
+    # 3. Скоро зміна стану
+    if left && left <= WARN
+      slot = "#{key}/#{on ? 'off' : 'on'}/#{(now.to_i + left * 60) / 3600}"
+      if state['warned'] != slot
+        if on
+          notify('Скоро вимкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
+        else
+          notify('Скоро увімкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
+        end
+        state['warned'] = slot
+      end
+    end
+  end
+
+  state['key'] = key
+  state['digest'] = digest
+  save_state(state)
+
+  # ── Menu bar ────────────────────────────────────────────────────────
+
+  region_name = REGIONS.dig(REGION, 0) || REGION
+  region_url  = REGIONS.dig(REGION, 3)
+
+  if UNKNOWN
+    puts '❔'
+    puts '---'
+    puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+    puts 'Графіка на сьогодні немає | color=orange size=14'
+    if age.negative?
+      puts "Джерело віддає дані на #{day_date.strftime('%d.%m')} | size=12 color=gray"
+    else
+      puts "Останній відомий — за #{day_date.strftime('%d.%m')} | size=12 color=gray"
+      puts 'Або ще не опублікували, або відключення скасували | size=11 color=gray'
+    end
+  elsif STALE
+    puts "🛑 #{day_date.strftime('%d.%m')}"
+    puts '---'
+    puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+    puts 'Дані застарілі | color=red size=14'
+    puts "Графік за #{day_date.strftime('%d.%m.%Y')} — #{age} дн. тому | color=red size=12"
+    puts 'Джерело не оновлює цей регіон. Не покладайся на розклад нижче. | size=11 color=gray'
+  else
+    # 💡 світло є · 🕯️ немає за графіком · 🚨 аварійне (графік обіцяв, а світла нема)
+    icon = if mismatch && on then '🚨'
+           else (mismatch ? ac : on) ? '💡' : '🕯️'
            end
-  groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.each do |k|
-    sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
-    puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=#{SELF} " \
-         "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
+    # Під час аварійного графік не діє, тож відлік за ним показувати нечесно
+    urgent = left && left <= WARN ? ' ⏳' : ''
+    siren = siren_prefix(alert)
+    puts(if mismatch && on then "#{siren}#{icon}"
+         elsif left then "#{siren}#{icon} #{fmt(left)}#{urgent}"
+         else "#{siren}#{icon}"
+         end)
+    puts '---'
+    puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+    # Головний рядок завжди починається з реальності, а не з графіка
+    if mismatch && on
+      puts 'Світла немає — схоже на аварійне | color=red size=14'
+      puts "За графіком мало бути світло до #{fmt(left)} | size=12 color=gray" if left
+      puts 'Коли дадуть — графік не підкаже | size=11 color=gray'
+    elsif mismatch
+      puts 'Світло є | color=green size=14'
+      puts(left ? "Дали раніше — за графіком ще #{fmt(left)} без світла | size=12 color=gray"
+                : 'Дали раніше за графік | size=12 color=gray')
+    elsif on
+      puts(if left then "Світло є · вимкнуть через #{fmt(left)} | color=green size=14"
+           elsif today.all? then 'Світло є · відключень сьогодні немає | color=green size=14'
+           else 'Світло є · більше відключень сьогодні не буде | color=green size=14'
+           end)
+    else
+      puts(left ? "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
+                : 'Світла немає | color=red size=14')
+    end
+
+    if ac.nil? && POWER && !was_plugged
+      puts 'Ноут давно не в розетці — звірка з живленням неактивна | size=11 color=gray'
+    end
   end
+
+  puts '---'
+  render_alert(alert)
+
+  label = if UNKNOWN then "Останній графік · #{day_date.strftime('%d.%m')}"
+          elsif STALE then day_date.strftime('%d.%m.%Y')
+          else 'Сьогодні'
+          end
+  puts "#{label} | size=12 color=gray"
+  if today.all?
+    puts '● Відключень немає | color=green size=13 font=Menlo'
+  end
+  segments(today).each do |from, to, lit|
+    next if today.all?
+
+    here = !STALE && (from..to - 1).cover?(now.hour) ? '  ←' : ''
+    puts format('%s  %02d:00 – %02d:00%s | color=%s font=Menlo size=13',
+                lit ? '●' : '○', from, to, here, lit ? 'green' : 'red')
+  end
+
+  puts '---'
+  puts 'Завтра | size=12 color=gray'
+
+  if tomorrow.nil?
+    puts 'Графіка ще немає | size=13 color=gray'
+    puts 'Зазвичай публікують увечері напередодні | size=11 color=gray'
+  elsif tomorrow.all?
+    puts '● Відключень немає | color=green size=13 font=Menlo'
+  else
+    segments(tomorrow).each do |from, to, lit|
+      puts format('%s  %02d:00 – %02d:00 | color=%s font=Menlo size=13',
+                  lit ? '●' : '○', from, to, lit ? 'green' : 'red')
+    end
+  end
+
+  # ── Налаштування ────────────────────────────────────────────────────
+
+  puts '---'
+  updated = safe(data.dig('fact', 'update') || data['lastUpdated'])
+  mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
+  puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
+
+  puts 'Налаштування | size=11 color=gray'
+
+  puts '--Регіон і черга | size=11'
+  REGIONS.each_key do |id|
+    puts "----#{id == REGION ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
+    groups = if id == REGION
+               (raw_days&.dig(today_key) || {}).keys
+             else
+               (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
+             end
+    groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.each do |k|
+      sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
+      puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=#{SELF} " \
+           "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
+    end
+  end
+
+  puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
+
+  puts "--#{POWER ? '✓ ' : ''}Звіряти з живленням ноута | size=11 bash=#{SELF} " \
+       "terminal=false refresh=true param1=--power param2=#{POWER ? 'off' : 'on'}"
+  puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=#{SELF} " \
+       "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
+  puts '--Сповіщення | size=11'
+  puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=#{SELF} terminal=false " \
+       "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
+  puts '----Попереджати за | size=11'
+  [5, 10, 15, 30, 60].each do |m|
+    puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=#{SELF} " \
+         "terminal=false refresh=true param1=--warn param2=#{m}"
+  end
+
+  puts "Оновити зараз | refresh=true size=11"
+  puts 'Джерело даних | size=11 href=https://github.com/yaroslav2901/OE_OUTAGE_DATA'
+rescue Errno::EPIPE
+  # Читач закрив потік (наприклад `| head`) — це не помилка
+  exit 0
+rescue StandardError => e
+  puts '🛑'
+  puts '---'
+  puts 'Несподівана помилка | color=red size=13'
+  puts "#{e.class}: #{e.message.to_s.delete('|')[0, 120]} | size=11 color=gray"
+  puts 'Оновити | refresh=true size=11'
 end
-
-puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
-
-puts "--#{POWER ? '✓ ' : ''}Звіряти з живленням ноута | size=11 bash=#{SELF} " \
-     "terminal=false refresh=true param1=--power param2=#{POWER ? 'off' : 'on'}"
-puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=#{SELF} " \
-     "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
-puts '--Сповіщення | size=11'
-puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=#{SELF} terminal=false " \
-     "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
-puts '----Попереджати за | size=11'
-[5, 10, 15, 30, 60].each do |m|
-  puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=#{SELF} " \
-       "terminal=false refresh=true param1=--warn param2=#{m}"
-end
-
-puts "Оновити зараз | refresh=true size=11"
-puts 'Джерело даних | size=11 href=https://github.com/yaroslav2901/OE_OUTAGE_DATA'

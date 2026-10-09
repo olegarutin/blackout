@@ -1,0 +1,362 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Тести для blackout.1m.rb
+#
+# Два рівні:
+#   1. Чисті функції — витягуються з вихідника і перевіряються напряму
+#   2. Інтеграційні — скрипт запускається процесом із тимчасовим HOME
+#      і підготованим кешем, тож у мережу не ходить
+#
+# Запуск: ruby test/test_blackout.rb
+
+require 'minitest/autorun'
+require 'date'
+require 'json'
+require 'tmpdir'
+require 'fileutils'
+require 'open3'
+
+PLUGIN = File.expand_path('../plugin/blackout.1m.rb', __dir__)
+SOURCE = File.read(PLUGIN)
+
+# Витягуємо чисті функції без запуску скрипта
+module Pure
+  %w[safe valid_schedule? hours_for segments minutes_until_change fmt
+     siren_prefix].each do |name|
+    body = SOURCE[/^def #{Regexp.escape(name)}.*?\n^end$/m]
+    raise "не знайдено метод #{name}" unless body
+
+    module_eval(body)
+    module_function name.to_sym
+  end
+end
+
+# ── Чисті функції ────────────────────────────────────────────────────
+
+class TestSafe < Minitest::Test
+  def test_вирізає_роздільник_параметрів
+    # SwiftBar читає '|' як початок параметрів, а bash= виконує команди
+    refute_includes Pure.safe('Район | bash=/bin/sh'), '|'
+  end
+
+  def test_не_псує_звичайний_текст
+    assert_equal 'Черкаський район, Уманський район',
+                 Pure.safe('Черкаський район, Уманський район')
+  end
+
+  def test_обрізає_пробіли
+    assert_equal 'текст', Pure.safe('  текст  ')
+  end
+
+  def test_приймає_nil
+    assert_equal '', Pure.safe(nil)
+  end
+end
+
+class TestValidSchedule < Minitest::Test
+  def valid_doc(groups)
+    { 'fact' => { 'data' => { '1791406800' => groups }, 'today' => 1_791_406_800 } }
+  end
+
+  def test_приймає_коректні_дані
+    assert Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => 'yes', '2' => 'no' }))
+  end
+
+  def test_приймає_значення_first_і_second
+    assert Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => 'first', '2' => 'second' }))
+  end
+
+  def test_приймає_київські_номери_черг
+    assert Pure.valid_schedule?(valid_doc('GPV60.1' => { '1' => 'yes' }))
+  end
+
+  def test_відхиляє_чужі_значення_годин
+    refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => '<script>' }))
+  end
+
+  def test_відхиляє_інєкцію_в_назві_черги
+    refute Pure.valid_schedule?(valid_doc('GPV1.1 | bash=sh' => { '1' => 'yes' }))
+  end
+
+  def test_відхиляє_години_поза_діапазоном
+    refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '99' => 'yes' }))
+    refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '0' => 'yes' }))
+  end
+
+  def test_відхиляє_несправжню_дату
+    doc = { 'fact' => { 'data' => { 'не-дата' => { 'GPV1.1' => { '1' => 'yes' } } } } }
+    refute Pure.valid_schedule?(doc)
+  end
+
+  def test_відхиляє_не_обєкт
+    refute Pure.valid_schedule?({ 'fact' => { 'data' => 'сміття' } })
+    refute Pure.valid_schedule?('зовсім не те')
+  end
+
+  def test_приймає_порожні_дані
+    # Дніпро й Одеса віддають порожній масив, коли відключень немає
+    assert Pure.valid_schedule?({ 'fact' => { 'data' => [] } })
+    assert Pure.valid_schedule?({ 'fact' => {} })
+  end
+end
+
+class TestHoursFor < Minitest::Test
+  def doc(hours)
+    { 'fact' => { 'data' => { 'd' => { 'GPV1.1' => hours } } } }
+  end
+
+  def test_година_n_це_інтервал_n_мінус_один
+    # ключ "22" у джерелі означає 21:00–22:00
+    h = Pure.hours_for(doc((1..24).to_h { |i| [i.to_s, i == 22 ? 'no' : 'yes'] }), 'GPV1.1', 'd')
+    refute h[21], 'індекс 21 має бути без світла'
+    assert h[20]
+    assert h[22]
+  end
+
+  def test_first_рахується_як_без_світла
+    h = Pure.hours_for(doc('1' => 'first'), 'GPV1.1', 'd')
+    refute h[0]
+  end
+
+  def test_невідома_черга
+    assert_nil Pure.hours_for(doc('1' => 'yes'), 'GPV9.9', 'd')
+  end
+end
+
+class TestSegments < Minitest::Test
+  def test_групує_однакові_години
+    hours = ([true] * 3) + ([false] * 2) + ([true] * 19)
+    assert_equal [[0, 3, true], [3, 5, false], [5, 24, true]], Pure.segments(hours)
+  end
+
+  def test_весь_день_один_відрізок
+    assert_equal [[0, 24, true]], Pure.segments([true] * 24)
+  end
+end
+
+class TestMinutesUntilChange < Minitest::Test
+  def at(hour, min)
+    Time.new(2026, 10, 8, hour, min)
+  end
+
+  def test_рахує_до_зміни_сьогодні
+    today = ([true] * 16) + ([false] * 8)
+    assert_equal 120, Pure.minutes_until_change(today, nil, at(14, 0))
+  end
+
+  def test_переходить_на_завтра
+    today = [true] * 24
+    tomorrow = [false] * 24
+    assert_equal 60, Pure.minutes_until_change(today, tomorrow, at(23, 0))
+  end
+
+  def test_нема_змін_взагалі
+    assert_nil Pure.minutes_until_change([true] * 24, [true] * 24, at(12, 0))
+  end
+end
+
+class TestSirenPrefix < Minitest::Test
+  def test_жовтий_це_дрони
+    assert_equal '🟡 ', Pure.siren_prefix({ level: 'yellow' })
+  end
+
+  def test_червоний_це_ракети
+    assert_equal '🔴 ', Pure.siren_prefix({ level: 'red' })
+  end
+
+  def test_невідомий_рівень_вважається_червоним
+    # Документація alerts.in.ua: де рівня немає, тривога трактується як червона
+    assert_equal '🔴 ', Pure.siren_prefix({ level: nil })
+  end
+
+  def test_без_тривоги_нічого
+    assert_equal '', Pure.siren_prefix(nil)
+  end
+end
+
+class TestFmt < Minitest::Test
+  def test_формат_годин_і_хвилин
+    assert_equal '2:05', Pure.fmt(125)
+    assert_equal '0:07', Pure.fmt(7)
+    assert_equal '12:00', Pure.fmt(720)
+  end
+end
+
+# ── Інтеграційні ─────────────────────────────────────────────────────
+
+class TestIntegration < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-test')
+    FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def write_cache(name, doc)
+    File.write(File.join(@home, '.cache', 'blackout', "#{name}.json"), JSON.generate(doc))
+  end
+
+  def schedule(day_offset: 0, hours: nil)
+    day = Date.today + day_offset
+    ts = Time.new(day.year, day.month, day.day).to_i
+    hours ||= (1..24).to_h { |i| [i.to_s, 'yes'] }
+    { 'regionId' => 'test', 'lastUpdated' => Time.now.iso8601,
+      'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => hours } },
+                  'update' => '08.10.2026 21:24', 'today' => ts } }
+  end
+
+  def run_plugin(env = {})
+    base = { 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+             'BLACKOUT_QUEUE' => 'GPV1.1' }
+    out, err, st = Open3.capture3(base.merge(env), 'ruby', PLUGIN)
+    [out, err, st]
+  end
+
+  def test_показує_графік_із_кешу_без_мережі
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    out, err, st = run_plugin
+    assert_equal 0, st.exitstatus
+    assert_empty err
+    assert_match(/💡/, out)
+  end
+
+  def test_застарілі_дані_позначаються
+    write_cache('Cherkasyoblenergo', schedule(day_offset: -90))
+    write_cache('alerts', { 'states' => {} })
+    out, = run_plugin
+    assert_match(/🛑/, out.lines.first)
+    assert_match(/застаріл/i, out)
+  end
+
+  def test_вчорашній_графік_це_невідомість_а_не_застарілість
+    write_cache('Cherkasyoblenergo', schedule(day_offset: -1))
+    write_cache('alerts', { 'states' => {} })
+    out, = run_plugin
+    assert_match(/❔/, out.lines.first)
+    assert_match(/на сьогодні немає/, out)
+  end
+
+  def test_невідомий_регіон_відкочується_на_типовий
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    out, _, st = run_plugin('BLACKOUT_REGION' => '../../etc/passwd')
+    assert_equal 0, st.exitstatus
+    assert_match(/Черкаська/, out)
+  end
+
+  def test_інєкція_через_чергу_не_проходить
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    out, = run_plugin('BLACKOUT_QUEUE' => 'GPV1.1 | bash=/bin/sh')
+    refute_match(%r{bash=/bin/sh}, out)
+  end
+
+  def test_назва_району_з_мережі_санітизується
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', {
+                  'states' => {
+                    'Черкаська область' => {
+                      'enabled' => false, 'alert_level' => nil,
+                      'districts' => {
+                        'Злий | bash=/bin/sh' => {
+                          'enabled' => true, 'alert_level' => 'red',
+                          'enabled_at' => Time.now.iso8601
+                        }
+                      }
+                    }
+                  }
+                })
+    out, = run_plugin
+    line = out.lines.find { |l| l.start_with?('Райони:') }
+    refute_nil line, 'рядок з районами має бути'
+
+    # SwiftBar ділить текст і параметри на ПЕРШОМУ '|'.
+    # Якщо санітизація спрацювала, bash= лишиться в тексті, а не стане параметром.
+    _title, params = line.split('|', 2)
+    refute_includes params.to_s, 'bash=',
+                    'назва району з мережі не має ставати параметром меню'
+    assert_match(/Тривога/, out)
+  end
+
+  def test_пошкоджений_кеш_не_кладе_скрипт
+    File.write(File.join(@home, '.cache', 'blackout', 'Cherkasyoblenergo.json'), '{зламано')
+    write_cache('alerts', { 'states' => {} })
+    _, err, st = run_plugin
+    assert_equal 0, st.exitstatus
+    assert_empty err
+  end
+
+  def test_зіпсована_дата_тривоги_не_кладе_скрипт
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', {
+                  'states' => {
+                    'Черкаська область' => {
+                      'enabled' => true, 'alert_level' => 'yellow',
+                      'enabled_at' => 'зовсім-не-дата', 'districts' => {}
+                    }
+                  }
+                })
+    out, err, st = run_plugin
+    assert_equal 0, st.exitstatus
+    assert_empty err
+    assert_match(/Тривога/, out)
+  end
+
+  def test_тривога_лише_по_районах_помічається
+    # Прапорець області лишається false, горять тільки райони
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', {
+                  'states' => {
+                    'Черкаська область' => {
+                      'enabled' => false, 'alert_level' => nil,
+                      'districts' => {
+                        'Уманський район' => { 'enabled' => true, 'alert_level' => 'red',
+                                               'enabled_at' => Time.now.iso8601 }
+                      }
+                    }
+                  }
+                })
+    out, = run_plugin
+    assert_match(/🔴/, out.lines.first)
+    assert_match(/Уманський район/, out)
+  end
+
+  def test_перемикач_не_приймає_чужий_регіон
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'зловмисний', 'GPV1.1')
+    cfg = File.join(@home, '.config', 'blackout.json')
+    refute File.exist?(cfg), 'конфіг не мав створитись'
+  end
+
+  def test_перемикач_приймає_відомий_регіон
+    write_cache('kyiv', schedule)
+    write_cache('alerts', { 'states' => {} })
+    Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'kyiv', 'GPV5.1')
+    cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
+    assert_equal 'kyiv', cfg['region']
+    assert_equal 'GPV5.1', cfg['queue']
+  end
+
+  def test_попередження_обмежене_діапазоном
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--warn', '999999')
+    cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
+    assert_equal 720, cfg['warn_minutes']
+  end
+
+  def test_у_виводі_немає_селекторів_варіації
+    # U+FE0F малюється квадратиком у шрифті menu bar
+    write_cache('Cherkasyoblenergo', schedule)
+    write_cache('alerts', { 'states' => {} })
+    out, = run_plugin
+    refute_includes out.lines.first, '️',
+                    'перший рядок не має містити U+FE0F'
+  end
+end

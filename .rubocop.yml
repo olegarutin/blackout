@@ -1,0 +1,22 @@
+AllCops:
+  TargetRubyVersion: 2.6          # штатний Ruby у macOS
+  NewCops: enable
+
+# Плагін SwiftBar — це один самодостатній файл, який копіюють цілком.
+# Розбивати його на класи заради метрик означає зламати спосіб встановлення.
+Metrics:
+  Enabled: false
+
+# Назви тестів українською — свідомий вибір, щоб звіт читався без перекладу
+Naming/AsciiIdentifiers:
+  Enabled: false
+
+Style/AsciiComments:
+  Enabled: false
+
+# Скрипт виводить багато рядків меню поспіль — це не «довгий метод»
+Layout/LineLength:
+  Max: 110
+
+Style/Documentation:
+  Enabled: false
