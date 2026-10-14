@@ -37,7 +37,7 @@ module Pure
   end
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
-     siren_prefix as_schedule fmt_updated].each do |name|
+     siren_prefix as_schedule fmt_updated read_etag read_cache].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -743,5 +743,40 @@ class TestFmtUpdated < Minitest::Test
   def test_сміття_не_ламає
     assert_equal 'хтозна', Pure.fmt_updated('хтозна')
     assert_equal '', Pure.fmt_updated(nil)
+  end
+end
+
+class TestCacheIntegrity < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-cache')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  # Якщо кеш зіпсований, а ETag валідний, сервер відповідатиме 304
+  # на порожній файл — і дані вже ніколи не завантажаться.
+  def test_зіпсований_кеш_скидає_etag
+    path = File.join(@cache, 'alerts.json')
+    File.write(path, '')
+    File.write("#{path}.etag", 'W/"abc123"')
+    assert_nil Pure.read_etag(path), 'ETag не має віддаватись для нечитабельного кешу'
+  end
+
+  def test_справний_кеш_віддає_etag
+    path = File.join(@cache, 'alerts.json')
+    File.write(path, '{"states":{}}')
+    File.write("#{path}.etag", 'W/"abc123"')
+    assert_equal 'W/"abc123"', Pure.read_etag(path)
+  end
+
+  def test_etag_без_кешу_не_віддається
+    path = File.join(@cache, 'nope.json')
+    File.write("#{path}.etag", 'W/"abc123"')
+    assert_nil Pure.read_etag(path)
   end
 end

@@ -14,10 +14,11 @@ require 'fileutils'
 require 'digest'
 require 'date'
 
-# Без змінних локалі Ruby читає файли як US-ASCII, і кирилиця в кеші
-# ламає розбір. Фіксуємо кодування явно.
+# Без змінних локалі Ruby читає файли як US-ASCII, і кирилиця ламає розбір.
+# Лише default_external: default_internal змусив би Ruby перекодовувати
+# при записі, а Net::HTTP віддає тіло бінарним — запис падав би,
+# лишаючи порожній файл у кеші.
 Encoding.default_external = Encoding::UTF_8
-Encoding.default_internal = Encoding::UTF_8
 require 'time'
 
 # Шлях до себе підставляється в bash= пунктів меню. Якщо застосунок
@@ -159,7 +160,9 @@ def http_get(url, etag = nil)
     raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
     raise 'response too large' if res.body.bytesize > MAX_BODY
 
-    [res.body, res['etag']]
+    # Net::HTTP віддає ASCII-8BIT; позначаємо як UTF-8, щоб запис
+    # у кеш і розбір JSON працювали передбачувано
+    [res.body.dup.force_encoding(Encoding::UTF_8), res['etag']]
   end
 end
 
@@ -268,8 +271,14 @@ def schedule_from(rows, queue)
     date: row['todayDate'], checked: row['todayCheckedAt'] }
 end
 
+# ETag має сенс лише тоді, коли сам кеш читається. Інакше сервер
+# відповідатиме 304 на порожній або зіпсований файл, і дані вже
+# ніколи не завантажаться — тихо й назавжди.
 def read_etag(path)
-  File.exist?("#{path}.etag") ? File.read("#{path}.etag") : nil
+  return nil unless File.exist?("#{path}.etag")
+  return nil unless read_cache(path)
+
+  File.read("#{path}.etag")
 rescue StandardError
   nil
 end
