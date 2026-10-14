@@ -859,3 +859,77 @@ class TestDistrict < Minitest::Test
     refute_match(%r{bash=/bin/sh}, out)
   end
 end
+
+class TestLimits < Minitest::Test
+  def test_safe_обрізає_довгий_текст
+    # Заголовок на 100 КБ розтягнув би пункт меню на весь екран
+    out = Pure.safe('A' * 100_000)
+    assert_operator out.length, :<=, 201
+    assert out.end_with?('…')
+  end
+
+  def test_safe_не_чіпає_коротке
+    assert_equal 'Новина', Pure.safe('Новина')
+  end
+
+  def test_safe_приймає_власну_межу
+    assert_equal 'abc…', Pure.safe('abcdefgh', 3)
+  end
+end
+
+class TestOversizedData < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-big')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    d = Date.today
+    @ts = Time.new(d.year, d.month, d.day).to_i
+    w('energy', [])
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_сотні_районів_не_розпирають_меню
+    districts = (0...500).to_h do |i|
+      ["Район #{i}", { 'enabled' => true, 'alert_level' => 'red',
+                       'enabled_at' => Time.now.utc.iso8601 }]
+    end
+    w('sd-cherkaska-oblast', [])
+    w('Cherkasyoblenergo',
+      'fact' => { 'data' => { @ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } },
+                  'today' => @ts })
+    w('alerts', 'states' => { 'Черкаська область' => {
+         'enabled' => false, 'alert_level' => 'red', 'districts' => districts
+       } })
+    out = run_plugin
+    line = out.lines.find { |l| l.start_with?('Райони:') }
+    refute_nil line
+    assert_operator line.length, :<, 300
+    assert_match(/та ще \d+/, line)
+  end
+
+  def test_жоден_рядок_не_довший_за_розумне
+    w('sd-cherkaska-oblast', [])
+    w('Cherkasyoblenergo',
+      'fact' => { 'update' => 'U' * 50_000,
+                  'data' => { @ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } },
+                  'today' => @ts })
+    w('alerts', 'states' => {})
+    w('notice', 'breaking' => { 'title' => 'T' * 50_000, 'excerpt' => 'E' * 50_000 })
+    longest = run_plugin.lines.map(&:length).max
+    assert_operator longest, :<, 500, 'рядок меню не має бути нескінченним'
+  end
+end

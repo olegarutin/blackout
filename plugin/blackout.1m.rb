@@ -458,8 +458,11 @@ end
 
 # SwiftBar розділяє текст і параметри символом '|' —
 # чистимо все, що прийшло з мережі, щоб воно не могло підмінити атрибути
-def safe(str)
-  str.to_s.delete('|').strip
+# Текст із мережі: прибираємо роздільник параметрів і обмежуємо довжину.
+# Без межі заголовок на 100 КБ розтягнув би меню на весь екран.
+def safe(str, limit = 200)
+  v = str.to_s.delete('|').strip
+  v.length > limit ? "#{v[0, limit]}…" : v
 end
 
 # Значення параметра SwiftBar (href=, bash= тощо) не може містити пробілів —
@@ -560,7 +563,9 @@ def render_alert(alert)
   if alert[:whole]
     puts 'Уся область | size=11 color=gray'
   elsif alert[:districts].any? && !DISTRICT
-    puts "Райони: #{safe(alert[:districts].join(', '))} | size=11 color=gray"
+    shown = alert[:districts].first(8)
+    tail = alert[:districts].size > 8 ? " та ще #{alert[:districts].size - 8}" : ''
+    puts "Райони: #{safe(shown.join(', '))}#{tail} | size=11 color=gray"
   end
   puts 'Жовтий — дрони · червоний — ракети | size=11 color=gray'
 end
@@ -853,7 +858,8 @@ begin
              else
                (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
              end
-    groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.each do |k|
+    # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
+  groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
       sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
       puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=\"#{SELF}\" " \
            "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
@@ -869,7 +875,7 @@ begin
     puts '--Район для тривог | size=11'
     puts "----#{DISTRICT ? '' : '✓ '}Уся область | size=11 bash=\"#{SELF}\" " \
          'terminal=false refresh=true param1=--district param2=""'
-    districts.each do |d|
+    districts.first(40).each do |d|
       next unless d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
 
       puts "----#{DISTRICT == d ? '✓ ' : ''}#{d} | size=11 bash=\"#{SELF}\" " \
