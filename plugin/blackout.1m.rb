@@ -24,6 +24,10 @@ ALERTS = 'https://vadimklimenko.com/map/statuses.json'
 # 2 — погодинні графіки, 3 — аварійні. Саме звідси беремо «аварійні»,
 # бо в самих графіках такої ознаки немає.
 ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
+# Головна новина енергосистеми від Укренерго — пояснює, ЧОМУ відключають.
+# Графік каже «коли», а це «через що»: атака, дефіцит, ремонт.
+NOTICE = 'https://alerts.energy/api/v1/notices'
+TTL_NEWS = 600 # новини не міняються щохвилини
 CACHE  = File.join(Dir.home, '.cache', 'blackout')
 CONFIG = File.join(Dir.home, '.config', 'blackout.json')
 STATE  = File.join(CACHE, 'state.json')
@@ -162,6 +166,33 @@ def fetch_energy
   parsed
 rescue StandardError
   File.exist?(path) ? read_cache(path) : nil
+end
+
+# Головна новина енергосистеми. nil, якщо її немає.
+def fetch_notice
+  FileUtils.mkdir_p(CACHE)
+  path = File.join(CACHE, 'notice.json')
+
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_NEWS
+    cached = read_cache(path)
+    return cached&.dig('breaking')
+  end
+
+  body, etag = http_get(NOTICE, read_etag(path))
+
+  if body.nil?
+    FileUtils.touch(path)
+    return read_cache(path)&.dig('breaking')
+  end
+
+  parsed = JSON.parse(body)
+  raise 'unexpected schema' unless parsed.is_a?(Hash)
+
+  File.write(path, body)
+  write_etag(path, etag)
+  parsed['breaking']
+rescue StandardError
+  File.exist?(path) ? read_cache(path)&.dig('breaking') : nil
 end
 
 def read_etag(path)
@@ -550,6 +581,16 @@ begin
 
   puts '---'
   render_alert(alert)
+
+  if (news = fetch_notice)
+    puts '---'
+    puts "📰 #{safe(news['title'])} | size=12 color=gray"
+    excerpt = safe(news['excerpt']).to_s
+    puts "#{excerpt[0, 150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90" unless excerpt.empty?
+    if news['slug'] && news['dateSlug']
+      puts "Читати | size=11 color=gray href=https://alerts.energy/news/#{news['dateSlug']}/#{news['slug']}"
+    end
+  end
 
   label = if UNKNOWN then "Останній графік · #{day_date.strftime('%d.%m')}"
           elsif STALE then day_date.strftime('%d.%m.%Y')

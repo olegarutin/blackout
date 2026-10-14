@@ -209,6 +209,11 @@ class TestIntegration < Minitest::Test
   end
 
   # Рівень обмежень по областях. Без цього тести лізуть у мережу.
+  def write_notice(title = nil)
+    write_cache('notice', title ? { 'breaking' => { 'title' => title, 'excerpt' => 'текст',
+                                                    'slug' => 's', 'dateSlug' => '2026-10-14' } } : {})
+  end
+
   def write_energy(level = 2)
     write_cache('energy', [{ 'name' => 'Черкаська область', 'slug' => 'cherkaska-oblast',
                              'level' => level, 'label' => level >= 3 ? 'Аварійні відключення' : 'Погодинні графіки відключень',
@@ -234,6 +239,7 @@ class TestIntegration < Minitest::Test
   def test_показує_графік_із_кешу_без_мережі
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, err, st = run_plugin
     assert_equal 0, st.exitstatus
@@ -244,6 +250,7 @@ class TestIntegration < Minitest::Test
   def test_застарілі_дані_позначаються
     write_cache('Cherkasyoblenergo', schedule(day_offset: -90))
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     assert_match(/📅/, out.lines.first)
@@ -253,6 +260,7 @@ class TestIntegration < Minitest::Test
   def test_вчорашній_графік_це_невідомість_а_не_застарілість
     write_cache('Cherkasyoblenergo', schedule(day_offset: -1))
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     assert_match(/❔/, out.lines.first)
@@ -262,6 +270,7 @@ class TestIntegration < Minitest::Test
   def test_невідомий_регіон_відкочується_на_типовий
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, _, st = run_plugin('BLACKOUT_REGION' => '../../etc/passwd')
     assert_equal 0, st.exitstatus
@@ -271,6 +280,7 @@ class TestIntegration < Minitest::Test
   def test_інєкція_через_чергу_не_проходить
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin('BLACKOUT_QUEUE' => 'GPV1.1 | bash=/bin/sh')
     refute_match(%r{bash=/bin/sh}, out)
@@ -279,6 +289,7 @@ class TestIntegration < Minitest::Test
   def test_назва_району_з_мережі_санітизується
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -307,6 +318,7 @@ class TestIntegration < Minitest::Test
   def test_пошкоджений_кеш_не_кладе_скрипт
     File.write(File.join(@home, '.cache', 'blackout', 'Cherkasyoblenergo.json'), '{зламано')
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     _, err, st = run_plugin
     assert_equal 0, st.exitstatus
@@ -316,6 +328,7 @@ class TestIntegration < Minitest::Test
   def test_зіпсована_дата_тривоги_не_кладе_скрипт
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -334,6 +347,7 @@ class TestIntegration < Minitest::Test
     # Прапорець області лишається false, горять тільки райони
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -353,6 +367,7 @@ class TestIntegration < Minitest::Test
   def test_перемикач_не_приймає_чужий_регіон
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'зловмисний', 'GPV1.1')
     cfg = File.join(@home, '.config', 'blackout.json')
@@ -362,6 +377,7 @@ class TestIntegration < Minitest::Test
   def test_перемикач_приймає_відомий_регіон
     write_cache('kyiv', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'kyiv', 'GPV5.1')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
@@ -372,6 +388,7 @@ class TestIntegration < Minitest::Test
   def test_попередження_обмежене_діапазоном
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--warn', '999999')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
@@ -382,6 +399,7 @@ class TestIntegration < Minitest::Test
     # U+FE0F малюється квадратиком у шрифті menu bar
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
+    write_notice
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     refute_includes out.lines.first, '️',
@@ -427,6 +445,7 @@ class TestEmergency < Minitest::Test
           'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } },
                       'today' => ts })
     write('alerts', 'states' => {})
+    write('notice', {})
   end
 
   def teardown
@@ -490,6 +509,7 @@ class TestDaySelection < Minitest::Test
     FileUtils.mkdir_p(File.join(@home, '.config'))
     File.write(File.join(@home, '.cache', 'blackout', 'alerts.json'), '{"states":{}}')
     File.write(File.join(@home, '.cache', 'blackout', 'energy.json'), '[]')
+    File.write(File.join(@home, '.cache', 'blackout', 'notice.json'), '{}')
   end
 
   def teardown
@@ -518,5 +538,51 @@ class TestDaySelection < Minitest::Test
     refute_match(/❔/, out.lines.first, 'мав взяти сьогоднішній день')
     assert_match(/💡/, out.lines.first)
     assert_match(/Сьогодні/, out)
+  end
+end
+
+class TestNotice < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-notice')
+    FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    d = Date.today
+    ts = Time.new(d.year, d.month, d.day).to_i
+    w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts })
+    w('alerts', 'states' => {})
+    w('energy', [])
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@home, '.cache', 'blackout', "#{name}.json"), JSON.generate(doc))
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_показує_новину
+    w('notice', 'breaking' => { 'title' => 'Обмеження 16:00-22:00', 'excerpt' => 'Через атаку',
+                                'slug' => 'obmezhennia', 'dateSlug' => '2026-10-14' })
+    out = run_plugin
+    assert_match(/📰 Обмеження 16:00-22:00/, out)
+    assert_match(%r{href=https://alerts.energy/news/2026-10-14/obmezhennia}, out)
+  end
+
+  def test_без_новини_нічого_не_показує
+    w('notice', {})
+    refute_match(/📰/, run_plugin)
+  end
+
+  def test_новина_з_мережі_санітизується
+    w('notice', 'breaking' => { 'title' => 'Атака | bash=/bin/sh', 'excerpt' => '' })
+    line = run_plugin.lines.find { |l| l.include?('📰') }
+    _title, params = line.split('|', 2)
+    refute_includes params.to_s, 'bash='
   end
 end
