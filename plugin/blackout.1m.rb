@@ -393,7 +393,7 @@ begin
   data, status = fetch_data(REGION)
 
   if data.nil?
-    puts '🛑 немає даних'
+    puts '❌ немає даних'
     puts '---'
     puts 'Не вдалося завантажити графік | color=red'
     puts "Відкрити джерело | href=#{SRC[REGIONS.dig(REGION, 1)]}/#{REGION}.json"
@@ -433,7 +433,7 @@ begin
   tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
 
   unless today
-    puts '🛑 немає черги'
+    puts '❌ немає черги'
     puts '---'
     puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
     puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
@@ -536,7 +536,7 @@ RECENT = 3 * 60 # секунд
       puts 'Або ще не опублікували, або відключення скасували | size=11 color=gray'
     end
   elsif STALE
-    puts "🛑 #{day_date.strftime('%d.%m')}"
+    puts "📅 #{day_date.strftime('%d.%m')}"
     puts '---'
     puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
     puts 'Дані застарілі | color=red size=14'
@@ -659,7 +659,7 @@ rescue Errno::EPIPE
   # Читач закрив потік (наприклад `| head`) — це не помилка
   exit 0
 rescue StandardError => e
-  puts '🛑'
+  puts '❌'
   puts '---'
   puts 'Несподівана помилка | color=red size=13'
   puts "#{e.class}: #{e.message.to_s.delete('|')[0, 120]} | size=11 color=gray"

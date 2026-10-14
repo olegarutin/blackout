@@ -229,7 +229,7 @@ class TestIntegration < Minitest::Test
     write_cache('Cherkasyoblenergo', schedule(day_offset: -90))
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
-    assert_match(/🛑/, out.lines.first)
+    assert_match(/📅/, out.lines.first)
     assert_match(/застаріл/i, out)
   end
 
