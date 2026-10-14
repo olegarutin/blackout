@@ -38,7 +38,7 @@
 
 ```sh
 brew install --cask swiftbar
-git clone https://github.com/olegarutin/blackout.git ~/blackout
+git clone --branch v1.0.0 https://github.com/olegarutin/blackout.git ~/blackout
 chmod +x ~/blackout/plugin/blackout.1m.rb
 open -a SwiftBar
 ```
@@ -70,10 +70,10 @@ brew install ruby
 **Оновлення.**
 
 ```sh
-git -C ~/blackout pull
+git -C ~/blackout fetch --tags && git -C ~/blackout checkout v1.0.0
 ```
 
-SwiftBar підхопить новий файл сам, перезапускати не треба.
+SwiftBar підхопить новий файл сам, перезапускати не треба. Останню версію видно в [релізах](https://github.com/olegarutin/blackout/releases); `git -C ~/blackout checkout main && git -C ~/blackout pull` дає свіжу розробку, якщо хочеться жити на краю.
 
 **Часовий пояс.** Графік — це київські години, тож застосунок рахує час за Києвом незалежно від поясу мака. Відлік «через 2:15» від цього не залежить, а години в розкладі (`16:00 – 19:00`) — київські. Для когось за кордоном це те, що й потрібно: видно, коли світло в дома, а не в тебе.
 
