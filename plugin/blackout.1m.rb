@@ -816,7 +816,9 @@ begin
   end
 
   puts "Оновити зараз | refresh=true size=11"
-  puts 'Джерело даних | size=11 href=https://github.com/yaroslav2901/OE_OUTAGE_DATA'
+  puts '---'
+  puts 'Дані з відкритих джерел, можливі неточності | size=10 color=gray'
+  puts 'Джерела даних | size=10 color=gray href=https://alerts.energy/'
 rescue Errno::EPIPE
   # Читач закрив потік (наприклад `| head`) — це не помилка
   exit 0
