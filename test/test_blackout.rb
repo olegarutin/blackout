@@ -37,7 +37,8 @@ module Pure
   end
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
-     siren_prefix as_schedule fmt_updated read_etag read_cache].each do |name|
+     siren_prefix as_schedule fmt_updated read_etag read_cache
+     atomic_write touch_cache ensure_dir].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -778,6 +779,73 @@ class TestCacheIntegrity < Minitest::Test
     path = File.join(@cache, 'nope.json')
     File.write("#{path}.etag", 'W/"abc123"')
     assert_nil Pure.read_etag(path)
+  end
+end
+
+# Зловмисна програма без особливих прав може підкласти в кеш символьне
+# посилання на будь-який файл користувача. Доки запис ішов через File.write,
+# ми перезаписували ціль даними з мережі.
+class TestSymlinkSafety < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-symlink')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    @victim = File.join(@home, 'victim.txt')
+    File.write(@victim, "важливі дані\n")
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def test_запис_не_йде_за_посиланням
+    path = File.join(@cache, 'alerts.json')
+    File.symlink(@victim, path)
+    Pure.atomic_write(path, '{"states":{}}')
+
+    assert_equal "важливі дані\n", File.read(@victim), 'жертву перезаписано'
+    refute File.symlink?(path), 'посилання мало зникнути'
+    assert_equal '{"states":{}}', File.read(path)
+  end
+
+  def test_touch_не_чіпає_посилання
+    path = File.join(@cache, 'alerts.json')
+    File.symlink(@victim, path)
+    before = File.mtime(@victim)
+    Pure.touch_cache(path)
+
+    assert_equal before, File.mtime(@victim), 'час жертви змінено'
+  end
+
+  def test_touch_оновлює_звичайний_файл
+    path = File.join(@cache, 'alerts.json')
+    File.write(path, '{}')
+    File.utime(Time.now - 3600, Time.now - 3600, path)
+    Pure.touch_cache(path)
+
+    assert_operator File.mtime(path), :>, Time.now - 60
+  end
+
+  def test_запис_атомарний_і_без_смiття
+    path = File.join(@cache, 'alerts.json')
+    Pure.atomic_write(path, 'x' * 1000)
+
+    assert_equal 1000, File.size(path)
+    assert_empty Dir.glob("#{path}*.tmp"), 'тимчасовий файл не прибрано'
+  end
+
+  def test_невдалий_запис_не_лишає_tmp
+    path = File.join(@home, 'немає-такої-теки', 'alerts.json')
+    assert_raises(StandardError) { Pure.atomic_write(path, '{}') }
+    assert_empty Dir.glob(File.join(@home, '**', '*.tmp'))
+  end
+
+  def test_нова_тека_кешу_лише_для_власника
+    dir = File.join(@home, 'fresh', 'blackout')
+    Pure.ensure_dir(dir)
+
+    assert_equal 0o700, File.stat(dir).mode & 0o777
   end
 end
 

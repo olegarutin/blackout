@@ -86,6 +86,31 @@ REGIONS = {
 
 SRC = { oe: OE_SRC, bk: BK_SRC }.freeze
 
+# ── Файли ──────────────────────────────────────────────────────────
+
+# File.write іде ЗА символьним посиланням: якщо зловмисна програма підкладе
+# в кеш посилання на чужий файл, ми перезапишемо його даними з мережі.
+# Перейменування замінює саме посилання, а не ціль, і заразом робить запис
+# атомарним — паралельні запуски не псують кеш.
+def atomic_write(path, body)
+  tmp = "#{path}.#{Process.pid}.tmp"
+  File.open(tmp, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |f| f.write(body) }
+  File.rename(tmp, path)
+rescue StandardError
+  FileUtils.rm_f(tmp)
+  raise
+end
+
+# touch теж іде за посиланням — оновив би час чужого файлу
+def touch_cache(path)
+  FileUtils.touch(path) unless File.symlink?(path)
+end
+
+# кеш і конфіг — лише для власника
+def ensure_dir(dir)
+  FileUtils.mkdir_p(dir, mode: 0o700)
+end
+
 # ── Конфіг ──────────────────────────────────────────────────────────
 
 def load_config
@@ -95,8 +120,8 @@ rescue StandardError
 end
 
 def save_config(cfg)
-  FileUtils.mkdir_p(File.dirname(CONFIG))
-  File.write(CONFIG, JSON.pretty_generate(cfg))
+  ensure_dir(File.dirname(CONFIG))
+  atomic_write(CONFIG, JSON.pretty_generate(cfg))
 end
 
 cfg = load_config
@@ -187,7 +212,7 @@ end
 
 # Рівень обмежень для нашої області. nil — якщо даних немає.
 def fetch_energy
-  FileUtils.mkdir_p(CACHE)
+  ensure_dir(CACHE)
   path = File.join(CACHE, 'energy.json')
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_ALERT
@@ -198,14 +223,14 @@ def fetch_energy
   body, etag = http_get(ENERGY, read_etag(path))
 
   if body.nil?
-    FileUtils.touch(path)
+    touch_cache(path)
     return read_cache(path)
   end
 
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless parsed.is_a?(Array)
 
-  File.write(path, body)
+  atomic_write(path, body)
   write_etag(path, etag)
   parsed
 rescue StandardError
@@ -214,7 +239,7 @@ end
 
 # Головна новина енергосистеми. nil, якщо її немає.
 def fetch_notice
-  FileUtils.mkdir_p(CACHE)
+  ensure_dir(CACHE)
   path = File.join(CACHE, 'notice.json')
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_NEWS
@@ -225,14 +250,14 @@ def fetch_notice
   body, etag = http_get(NOTICE, read_etag(path))
 
   if body.nil?
-    FileUtils.touch(path)
+    touch_cache(path)
     return read_cache(path)&.dig('breaking')
   end
 
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless parsed.is_a?(Hash)
 
-  File.write(path, body)
+  atomic_write(path, body)
   write_etag(path, etag)
   parsed['breaking']
 rescue StandardError
@@ -244,7 +269,7 @@ end
 def fetch_shutdowns(slug)
   return nil unless slug
 
-  FileUtils.mkdir_p(CACHE)
+  ensure_dir(CACHE)
   path = File.join(CACHE, "sd-#{slug}.json")
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
@@ -255,7 +280,7 @@ def fetch_shutdowns(slug)
   body, etag = http_get(format(SHUTDOWNS, slug), read_etag(path))
 
   if body.nil?
-    FileUtils.touch(path)
+    touch_cache(path)
     cached = read_cache(path)
     return cached.nil? || cached.empty? ? nil : cached
   end
@@ -264,7 +289,7 @@ def fetch_shutdowns(slug)
   raise 'unexpected schema' unless parsed.is_a?(Array)
   raise 'bad rows' unless parsed.all? { |r| r.is_a?(Hash) && r['queue'].to_s.match?(/\A\d{1,3}\.\d{1,2}\z/) }
 
-  File.write(path, body)
+  atomic_write(path, body)
   write_etag(path, etag)
   parsed.empty? ? nil : parsed
 rescue StandardError
@@ -303,7 +328,7 @@ rescue StandardError
 end
 
 def write_etag(path, etag)
-  etag ? File.write("#{path}.etag", etag) : FileUtils.rm_f("#{path}.etag")
+  etag ? atomic_write("#{path}.etag", etag) : FileUtils.rm_f("#{path}.etag")
 rescue StandardError
   nil
 end
@@ -397,7 +422,7 @@ def fetch_data(region)
 end
 
 def fetch_from_github(region)
-  FileUtils.mkdir_p(CACHE)
+  ensure_dir(CACHE)
   path = File.join(CACHE, "#{region}.json")
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
@@ -410,14 +435,14 @@ def fetch_from_github(region)
 
   # 304 — дані ті самі, лише відсуваємо час наступної перевірки
   if body.nil?
-    FileUtils.touch(path)
+    touch_cache(path)
     return [read_cache(path), :cache]
   end
 
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless valid_schedule?(parsed)
 
-  File.write(path, body)
+  atomic_write(path, body)
   write_etag(path, etag)
   [parsed, :fresh]
 rescue StandardError
@@ -491,7 +516,7 @@ end
 # ── Повітряна тривога ───────────────────────────────────────────────
 
 def fetch_alerts
-  FileUtils.mkdir_p(CACHE)
+  ensure_dir(CACHE)
   path = File.join(CACHE, 'alerts.json')
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_ALERT
@@ -502,14 +527,14 @@ def fetch_alerts
   body, etag = http_get(ALERTS, read_etag(path))
 
   if body.nil?
-    FileUtils.touch(path)
+    touch_cache(path)
     return read_cache(path)
   end
 
   parsed = JSON.parse(body)
   raise 'unexpected schema' unless parsed.is_a?(Hash) && parsed['states'].is_a?(Hash)
 
-  File.write(path, body)
+  atomic_write(path, body)
   write_etag(path, etag)
   parsed
 rescue StandardError
@@ -579,8 +604,8 @@ rescue StandardError
 end
 
 def save_state(st)
-  FileUtils.mkdir_p(CACHE)
-  File.write(STATE, JSON.generate(st))
+  ensure_dir(CACHE)
+  atomic_write(STATE, JSON.generate(st))
 end
 
 def notify(title, message)
