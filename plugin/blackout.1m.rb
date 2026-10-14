@@ -7,6 +7,11 @@
 # <xbar.desc>Графік погодинних відключень: стан, відлік і сповіщення про зміни</xbar.desc>
 # <xbar.dependencies>ruby</xbar.dependencies>
 
+# Графік — це київські години. На маку з іншим поясом ті самі дані давали
+# протилежну відповідь: у Києві «світла немає», у Лісабоні «світло є».
+# Пояс фіксуємо на весь процес, перш ніж узагалі торкатися Time.
+ENV['TZ'] = 'Europe/Kyiv'
+
 require 'json'
 require 'net/http'
 require 'uri'
@@ -164,9 +169,14 @@ end
 # Регіон стає частиною URL і шляху до кешу, тож приймаємо лише відомі ключі.
 # Чергу — лише за суворим шаблоном: вона потрапляє у текст меню,
 # а SwiftBar читає '|' як початок параметрів.
-raw_region = utf8(ENV['BLACKOUT_REGION']) || cfg['region'] || 'Cherkasyoblenergo'
-raw_queue  = utf8(ENV['BLACKOUT_QUEUE'])  || cfg['queue']  || 'GPV1.1'
+raw_region = utf8(ENV['BLACKOUT_REGION']) || cfg['region']
+raw_queue  = utf8(ENV['BLACKOUT_QUEUE'])  || cfg['queue']
 
+# Доки вибору не було, показувати Черкащину як «свою» область — брехня
+# для всіх інших. Запасні значення лишаються, щоб решта коду мала з чим
+# працювати, але екран вибору має пріоритет над будь-яким графіком.
+CONFIGURED = (REGIONS.key?(raw_region) &&
+              raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)) ? true : false
 REGION = REGIONS.key?(raw_region) ? raw_region : 'Cherkasyoblenergo'
 QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
 WARN   = (cfg['warn_minutes'] || 15).to_i
@@ -183,6 +193,9 @@ DISTRICT = raw_district.to_s.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/) ? raw_distri
 # 'maybe*' зараз у даних не трапляються, але закладені у формат —
 # без них валідатор відкинув би валідний файл цілком.
 HOUR_VALUES = %w[yes no first second maybe mfirst msecond].freeze
+
+# Поки не знаємо даних регіону, показуємо звичайні шість черг по дві підчерги
+DEFAULT_GROUPS = (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }.freeze
 
 MAX_BODY  = 2 * 1024 * 1024 # 2 МБ — реальні файли важать 15–300 КБ
 OPEN_TIME = 5               # секунд на встановлення з'єднання
@@ -590,6 +603,25 @@ def alert_districts(oblast)
   names.empty? ? nil : names.sort
 end
 
+# Той самий перелік потрібен двічі: на екрані першого запуску без відступу
+# і всередині «Налаштувань» з відступом.
+def region_picker(indent, known_groups)
+  REGIONS.each_key do |id|
+    here = CONFIGURED && id == REGION
+    puts "#{indent}#{here ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
+    site = REGIONS.dig(id, 3)
+    puts "#{indent}--Не знаю свою чергу | size=11#{site ? " href=#{site}" : ''}"
+    groups = here && known_groups ? known_groups : DEFAULT_GROUPS
+    # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
+    groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
+          .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
+      puts "#{indent}--#{here && k == QUEUE ? '✓ ' : ''}черга #{k.sub('GPV', '')} | " \
+           "size=11 bash=\"#{SELF}\" terminal=false refresh=true " \
+           "param1=--set param2=#{id} param3=#{k}"
+    end
+  end
+end
+
 def render_alert(alert)
   unless alert
     if ALERTS_ON && REGIONS.dig(REGION, 2)
@@ -654,6 +686,18 @@ end
 # Остання лінія оборони: несподівана помилка не має показувати стек трейс
 # у menu bar. Краще один зрозумілий рядок, ніж сторінка Ruby-виводу.
 begin
+  # Перший запуск: нічого не вгадуємо, просимо вибрати
+  unless CONFIGURED
+    puts '🔌'
+    puts '---'
+    puts 'Регіон не вибрано | size=13'
+    puts 'Обери область і чергу — далі застосунок працює сам | size=11 color=gray'
+    puts '---'
+    region_picker('', nil)
+    puts '---'
+    puts 'Не знаєш чергу? У кожній області є посилання на сайт обленерго | size=10 color=gray'
+    exit
+  end
 
   alert = nil
   if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2))
@@ -805,7 +849,6 @@ begin
   # ── Menu bar ────────────────────────────────────────────────────────
 
   region_name = REGIONS.dig(REGION, 0) || REGION
-  region_url  = REGIONS.dig(REGION, 3)
 
   if UNKNOWN
     puts '❔'
@@ -907,23 +950,7 @@ begin
   puts 'Налаштування | size=11 color=gray'
 
   puts '--Регіон і черга | size=11'
-  REGIONS.each_key do |id|
-    puts "----#{id == REGION ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
-    groups = if id == REGION
-               (raw_days&.dig(today_key) || {}).keys
-             else
-               (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
-             end
-    # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
-  groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
-           .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
-      sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
-      puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=\"#{SELF}\" " \
-           "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
-    end
-  end
-
-  puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
+  region_picker('----', (raw_days&.dig(today_key) || {}).keys)
 
   puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"

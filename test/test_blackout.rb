@@ -852,6 +852,103 @@ end
 # Зловмисна програма без особливих прав може підкласти в кеш символьне
 # посилання на будь-який файл користувача. Доки запис ішов через File.write,
 # ми перезаписували ціль даними з мережі.
+# Графік — це київські години. На маку з іншим поясом ті самі дані
+# давали протилежну відповідь: у Києві «світла немає», у Лісабоні «світло є».
+class TestTimezone < Minitest::Test
+  ZONES = ['Europe/Kyiv', 'Europe/Lisbon', 'America/New_York', 'Asia/Tokyo', 'UTC'].freeze
+
+  def setup
+    @home = Dir.mktmpdir('blackout-tz')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    File.write(File.join(@home, '.config', 'blackout.json'),
+               JSON.generate('region' => 'Cherkasyoblenergo', 'queue' => 'GPV1.1',
+                             'notify' => false, 'alerts' => false))
+    # Доба за київським часом, світло лише в першій половині
+    day = Date.today
+    ts = Time.new(day.year, day.month, day.day).to_i
+    hours = (1..24).to_h { |i| [i.to_s, i <= 12 ? 'yes' : 'no'] }
+    w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => hours } },
+                                       'today' => ts })
+    w('sd-cherkaska-oblast', [])
+    w('alerts', 'states' => {})
+    w('energy', [])
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  def test_відповідь_однакова_у_будь_якому_поясі
+    answers = ZONES.map do |tz|
+      out, = Open3.capture3({ 'HOME' => @home, 'TZ' => tz }, 'ruby', PLUGIN)
+      [tz, out.lines.first.to_s.strip]
+    end
+    first = answers.first.last
+    refute_empty first
+    answers.each do |tz, line|
+      assert_equal first, line, "пояс #{tz} дав іншу відповідь"
+    end
+  end
+end
+
+# Перший запуск не має вдавати, ніби Черкащина — це область користувача
+class TestFirstRun < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-first')
+    FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def run_plugin(*args)
+    Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, *args).first
+  end
+
+  def test_без_конфігу_просить_вибрати_а_не_показує_чужий_графік
+    out = run_plugin
+    assert_match(/Регіон не вибрано/, out)
+    refute_match(/Черкаська обл\. · черга/, out, 'показано чужу область як свою')
+    refute_match(/через \d+:\d\d/, out, 'показано відлік для невибраної області')
+  end
+
+  def test_екран_вибору_не_ходить_у_мережу
+    out = run_plugin
+    assert_empty Dir.children(File.join(@home, '.cache', 'blackout')),
+                 'на екрані вибору запитів бути не повинно'
+    assert_match(/черга 1\.1/, out)
+  end
+
+  def test_нічого_не_позначено_галочкою
+    refute_match(/✓/, run_plugin, 'до вибору галочки стояти не має')
+  end
+
+  def test_кожна_область_має_посилання_на_обленерго
+    out = run_plugin
+    regions = out.lines.count { |l| l.chomp.match?(/\A[^-].* \| size=11\z/) }
+    links = out.lines.count { |l| l.start_with?('--Не знаю свою чергу') }
+    assert_operator regions, :>=, 26
+    assert_equal regions, links
+  end
+
+  def test_після_вибору_показує_графік
+    run_plugin('--set', 'Lvivoblenerho', 'GPV3.2')
+    cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
+    assert_equal 'Lvivoblenerho', cfg['region']
+    assert_equal 'GPV3.2', cfg['queue']
+    refute_match(/Регіон не вибрано/, run_plugin)
+  end
+end
+
 class TestSymlinkSafety < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-symlink')
