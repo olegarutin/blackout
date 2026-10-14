@@ -10,15 +10,21 @@
 #
 # Запуск: ruby test/test_blackout.rb
 
+# Без змінних локалі Ruby читає файли й вивід підпроцесів як US-ASCII,
+# і кирилиця ламає порівняння. Фіксуємо явно.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
 require 'minitest/autorun'
 require 'date'
+require 'time'
 require 'json'
 require 'tmpdir'
 require 'fileutils'
 require 'open3'
 
 PLUGIN = File.expand_path('../plugin/blackout.1m.rb', __dir__)
-SOURCE = File.read(PLUGIN)
+SOURCE = File.read(PLUGIN, encoding: 'UTF-8')
 
 # Витягуємо чисті функції без запуску скрипта
 module Pure

@@ -13,6 +13,11 @@ require 'uri'
 require 'fileutils'
 require 'digest'
 require 'date'
+
+# Без змінних локалі Ruby читає файли як US-ASCII, і кирилиця в кеші
+# ламає розбір. Фіксуємо кодування явно.
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
 require 'time'
 
 # Шлях до себе підставляється в bash= пунктів меню. Якщо застосунок
@@ -77,7 +82,7 @@ SRC = { oe: OE_SRC, bk: BK_SRC }.freeze
 # ── Конфіг ──────────────────────────────────────────────────────────
 
 def load_config
-  File.exist?(CONFIG) ? JSON.parse(File.read(CONFIG)) : {}
+  File.exist?(CONFIG) ? JSON.parse(File.read(CONFIG, encoding: 'UTF-8')) : {}
 rescue StandardError
   {}
 end
@@ -277,7 +282,7 @@ end
 
 # Читання кешу теж може впасти на пошкодженому файлі
 def read_cache(path)
-  JSON.parse(File.read(path))
+  JSON.parse(File.read(path, encoding: 'UTF-8'))
 rescue StandardError
   nil
 end

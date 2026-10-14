@@ -17,6 +17,10 @@ jobs:
         # 3.4 — те, що стоїть у більшості розробників.
         ruby: ['2.6', '3.4']
 
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+
     steps:
       - uses: actions/checkout@v4
 
