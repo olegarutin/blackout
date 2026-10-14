@@ -753,13 +753,19 @@ begin
   raw_days = nil unless raw_days.is_a?(Hash)
   day_keys = (raw_days&.keys || []).sort_by(&:to_i)
 
+  # Документ є, а днів у ньому немає. Раніше це малювалось зеленою 💡,
+  # тобто «світло є» — та сама брехня, що й з часовим поясом: Одеса
+  # мала нуль даних і зелену лампочку. Відсутність графіка — це ❔.
   if day_keys.empty?
-    puts "#{siren_prefix(alert)}💡"
+    label = area && safe(area['label'])
+    puts(emergency ? "#{siren_prefix(alert)}🚨" : "#{siren_prefix(alert)}❔")
     puts '---'
     puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
-    puts 'Графіків немає | color=green size=14'
-    puts 'Джерело не публікує відключень для цього регіону | size=11 color=gray'
-    puts "Оновлено: #{safe(data['lastUpdated'])} | size=11 color=gray"
+    puts "#{label || 'Актуального графіка немає'} | color=#{emergency ? 'red' : 'orange'} size=14"
+    unless emergency
+      puts 'Джерело віддало порожній графік — відключення можливі | size=11 color=gray'
+    end
+    puts "Оновлено: #{fmt_updated(data['lastUpdated'])} | size=11 color=gray" if data['lastUpdated']
     render_alert(alert)
     exit
   end

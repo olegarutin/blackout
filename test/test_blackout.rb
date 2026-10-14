@@ -854,6 +854,52 @@ end
 # ми перезаписували ціль даними з мережі.
 # Графік — це київські години. На маку з іншим поясом ті самі дані
 # давали протилежну відповідь: у Києві «світла немає», у Лісабоні «світло є».
+# Порожній графік — це «не знаємо», а не «світла вдосталь». Раніше
+# Одеса з нульовими даними малювала зелену 💡.
+class TestEmptySchedule < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-empty')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    w('sd-cherkaska-oblast', [])
+    w('alerts', 'states' => {})
+    w('energy', [])
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_порожній_графік_не_видає_себе_за_світло
+    w('Cherkasyoblenergo', 'fact' => { 'data' => {} }, 'lastUpdated' => Time.now.iso8601)
+    out = run_plugin
+
+    assert_match(/❔/, out.lines.first, 'порожній графік показано як «світло є»')
+    refute_match(/💡/, out.lines.first)
+    # «Тривоги немає» лишається зеленим законно — зелений не має бути
+    # лише там, де йдеться про графік
+    schedule_line = out.lines.find { |l| l.include?('графіка немає') }
+    refute_nil schedule_line
+    refute_match(/color=green/, schedule_line)
+  end
+
+  def test_порожній_графік_не_показує_сирий_час
+    w('Cherkasyoblenergo', 'fact' => { 'data' => {} }, 'lastUpdated' => Time.now.iso8601)
+    refute_match(/\d{4}-\d\d-\d\dT/, run_plugin, 'ISO-штамп замість людської дати')
+  end
+end
+
 class TestTimezone < Minitest::Test
   ZONES = ['Europe/Kyiv', 'Europe/Lisbon', 'America/New_York', 'Asia/Tokyo', 'UTC'].freeze
 
