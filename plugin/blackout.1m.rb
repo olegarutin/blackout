@@ -198,15 +198,23 @@ def http_get(url, etag = nil)
                                       read_timeout: READ_TIME) do |http|
     req = Net::HTTP::Get.new(uri.request_uri)
     req['If-None-Match'] = etag if etag
-    res = http.request(req)
 
-    return [nil, etag] if res.is_a?(Net::HTTPNotModified)
-    raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
-    raise 'response too large' if res.body.bytesize > MAX_BODY
+    http.request(req) do |res|
+      return [nil, etag] if res.is_a?(Net::HTTPNotModified)
+      raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
 
-    # Net::HTTP віддає ASCII-8BIT; позначаємо як UTF-8, щоб запис
-    # у кеш і розбір JSON працювали передбачувано
-    [res.body.dup.force_encoding(Encoding::UTF_8), res['etag']]
+      # Межу перевіряємо під час читання: res.body спершу набрав би
+      # у пам'ять усе, що віддасть сервер, і лише потім ми б обурились
+      body = ''.b
+      res.read_body do |chunk|
+        body << chunk
+        raise 'response too large' if body.bytesize > MAX_BODY
+      end
+
+      # Net::HTTP віддає ASCII-8BIT; позначаємо як UTF-8, щоб запис
+      # у кеш і розбір JSON працювали передбачувано
+      return [body.force_encoding(Encoding::UTF_8), res['etag']]
+    end
   end
 end
 
