@@ -115,6 +115,15 @@ when '--alerts'
   cfg['alerts'] = (ARGV[1] == 'on')
   save_config(cfg)
   exit
+when '--district'
+  # Порожнє значення означає «вся область». Назва району приходить
+  # із меню, побудованого з даних мережі, тож перевіряємо форму.
+  d = ARGV[1].to_s
+  exit unless d.empty? || d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
+
+  cfg['district'] = d.empty? ? nil : d
+  save_config(cfg)
+  exit
 end
 
 # Регіон стає частиною URL і шляху до кешу, тож приймаємо лише відомі ключі.
@@ -128,6 +137,10 @@ QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
 WARN   = (cfg['warn_minutes'] || 15).to_i
 NOTIFY = cfg.fetch('notify', true)
 ALERTS_ON = cfg.fetch('alerts', true)
+# Назва району приходила з меню, яке будується з даних мережі,
+# тож перевіряємо форму, перш ніж довіряти
+raw_district = ENV['BLACKOUT_DISTRICT'] || cfg['district']
+DISTRICT = raw_district.to_s.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/) ? raw_district : nil
 
 # ── Дані ────────────────────────────────────────────────────────────
 
@@ -503,6 +516,15 @@ def siren_prefix(alert)
   alert[:level] == 'yellow' ? '🟡 ' : '🔴 '
 end
 
+# Перелік районів області для меню вибору
+def alert_districts(oblast)
+  return nil unless oblast
+
+  st = (fetch_alerts || {}).dig('states', oblast)
+  names = ((st && st['districts']) || {}).keys
+  names.empty? ? nil : names.sort
+end
+
 def render_alert(alert)
   unless alert
     if ALERTS_ON && REGIONS.dig(REGION, 2)
@@ -520,16 +542,18 @@ def render_alert(alert)
                   end
   puts "#{label} | color=#{colour} size=14"
 
+  # Коли обрано район, показувати область було б неточно
+  where = DISTRICT && !alert[:whole] ? safe(DISTRICT) : REGIONS.dig(REGION, 2)
   if alert[:since]
     mins = ((Time.now - alert[:since]) / 60).to_i
-    puts "#{REGIONS.dig(REGION, 2)} · триває #{mins / 60} год #{mins % 60} хв | size=12 color=gray"
+    puts "#{where} · триває #{mins / 60} год #{mins % 60} хв | size=12 color=gray"
   else
-    puts "#{REGIONS.dig(REGION, 2)} | size=12 color=gray"
+    puts "#{where} | size=12 color=gray"
   end
 
   if alert[:whole]
     puts 'Уся область | size=11 color=gray'
-  elsif alert[:districts].any?
+  elsif alert[:districts].any? && !DISTRICT
     puts "Райони: #{safe(alert[:districts].join(', '))} | size=11 color=gray"
   end
   puts 'Жовтий — дрони · червоний — ракети | size=11 color=gray'
@@ -572,6 +596,9 @@ begin
         # Тривогу можуть оголосити по всій області або лише по окремих районах —
         # у другому випадку прапорець області лишається false
         hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
+        # Якщо обрано конкретний район, тривога в сусідньому не стосується.
+        # Оголошення на всю область лишається значущим у будь-якому разі.
+        hot = hot.select { |name, _| name == DISTRICT } if DISTRICT && !st['enabled']
         if st['enabled'] || hot.any?
           levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
           # red важливіший за yellow; якщо рівня немає — за замовчуванням червоний
@@ -831,6 +858,18 @@ begin
 
   puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
+
+  if ALERTS_ON && (districts = alert_districts(REGIONS.dig(REGION, 2)))
+    puts '--Район для тривог | size=11'
+    puts "----#{DISTRICT ? '' : '✓ '}Уся область | size=11 bash=\"#{SELF}\" " \
+         'terminal=false refresh=true param1=--district param2=""'
+    districts.each do |d|
+      next unless d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
+
+      puts "----#{DISTRICT == d ? '✓ ' : ''}#{d} | size=11 bash=\"#{SELF}\" " \
+           "terminal=false refresh=true param1=--district param2=\"#{d}\""
+    end
+  end
   puts '--Сповіщення | size=11'
   puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=\"#{SELF}\" terminal=false " \
        "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"

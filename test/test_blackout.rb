@@ -780,3 +780,82 @@ class TestCacheIntegrity < Minitest::Test
     assert_nil Pure.read_etag(path)
   end
 end
+
+class TestDistrict < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-district')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    d = Date.today
+    ts = Time.new(d.year, d.month, d.day).to_i
+    w('sd-cherkaska-oblast', [])
+    w('Cherkasyoblenergo',
+      'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts })
+    w('energy', [])
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  # Тривога лише в Черкаському районі, користувач в Уманському
+  def alerts_in(*hot)
+    districts = ['Уманський район', 'Черкаський район'].to_h do |n|
+      [n, { 'enabled' => hot.include?(n), 'alert_level' => 'yellow',
+            'enabled_at' => Time.now.utc.iso8601 }]
+    end
+    w('alerts', 'states' => { 'Черкаська область' => {
+         'enabled' => false, 'alert_level' => nil, 'districts' => districts
+       } })
+  end
+
+  def run_plugin(env = {})
+    base = { 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+             'BLACKOUT_QUEUE' => 'GPV1.1' }
+    Open3.capture3(base.merge(env), 'ruby', PLUGIN).first
+  end
+
+  def test_чужий_район_не_показує_тривогу
+    alerts_in('Черкаський район')
+    out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
+    assert_match(/Тривоги немає/, out)
+    refute_match(/🟡/, out.lines.first)
+  end
+
+  def test_свій_район_показує_тривогу
+    alerts_in('Уманський район')
+    out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
+    assert_match(/Тривога — дрони/, out)
+    assert_match(/Уманський район · триває/, out)
+  end
+
+  def test_без_вибору_береться_вся_область
+    alerts_in('Черкаський район')
+    out = run_plugin
+    assert_match(/Тривога — дрони/, out)
+    assert_match(/Черкаська область/, out)
+  end
+
+  def test_тривога_на_всю_область_стосується_всіх
+    # Оголошення по області значуще навіть для того, хто обрав район
+    w('alerts', 'states' => { 'Черкаська область' => {
+         'enabled' => true, 'alert_level' => 'red',
+         'enabled_at' => Time.now.utc.iso8601, 'districts' => {}
+       } })
+    out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
+    assert_match(/ракетна загроза/, out)
+    assert_match(/Уся область/, out)
+  end
+
+  def test_назва_району_з_інєкцією_ігнорується
+    alerts_in('Уманський район')
+    out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський bash=/bin/sh')
+    refute_match(%r{bash=/bin/sh}, out)
+  end
+end
