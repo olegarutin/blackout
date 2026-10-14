@@ -38,7 +38,7 @@
 
 ```sh
 brew install --cask swiftbar
-git clone --branch v1.0.0 https://github.com/olegarutin/blackout.git ~/blackout
+git clone --branch v1.0.1 https://github.com/olegarutin/blackout.git ~/blackout
 chmod +x ~/blackout/plugin/blackout.1m.rb
 open -a SwiftBar
 ```
@@ -70,7 +70,7 @@ brew install ruby
 **Оновлення.**
 
 ```sh
-git -C ~/blackout fetch --tags && git -C ~/blackout checkout v1.0.0
+git -C ~/blackout fetch --tags && git -C ~/blackout checkout v1.0.1
 ```
 
 SwiftBar підхопить новий файл сам, перезапускати не треба. Останню версію видно в [релізах](https://github.com/olegarutin/blackout/releases); `git -C ~/blackout checkout main && git -C ~/blackout pull` дає свіжу розробку, якщо хочеться жити на краю.
