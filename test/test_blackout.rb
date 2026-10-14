@@ -602,7 +602,7 @@ end
 class TestShutdownsSource < Minitest::Test
   def rows(extra = [])
     base = { 'initiator' => 'cherkaska_oblast_oblenergo', 'queue' => '1.1',
-             'today' => ([0] * 10 + [1, 1] + [0] * 12),
+             'today' => (([0] * 10) + [1, 1] + ([0] * 12)),
              'todayPossible' => [0] * 24,
              'tomorrow' => [], 'todayStatus' => 'ScheduleApplies',
              'tomorrowStatus' => 'WaitingForSchedule',
@@ -628,7 +628,7 @@ class TestShutdownsSource < Minitest::Test
   def test_обирає_обленерго_а_не_залізницю
     # На одну чергу буває кілька постачальників із різними графіками
     uz = { 'initiator' => 'cherkaska_oblast_uz', 'queue' => '1.1',
-           'today' => ([0] * 15 + [1, 1] + [0] * 7), 'todayPossible' => [0] * 24,
+           'today' => (([0] * 15) + [1, 1] + ([0] * 7)), 'todayPossible' => [0] * 24,
            'todayStatus' => 'ScheduleApplies', 'todayDate' => Date.today.to_s }
     d = built(rows([uz]))
     h = d['fact']['data'].values.first['GPV1.1']
@@ -638,7 +638,7 @@ class TestShutdownsSource < Minitest::Test
 
   def test_possible_стає_maybe
     rs = rows
-    rs[0]['todayPossible'] = [0] * 5 + [1] + [0] * 18
+    rs[0]['todayPossible'] = ([0] * 5) + [1] + ([0] * 18)
     h = built(rs)['fact']['data'].values.first['GPV1.1']
     assert_equal 'maybe', h['6']
   end
