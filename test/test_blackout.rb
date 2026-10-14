@@ -37,8 +37,8 @@ module Pure
   end
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
-     siren_prefix as_schedule].each do |name|
-    body = SOURCE[/^def #{Regexp.escape(name)}.*?\n^end$/m]
+     siren_prefix as_schedule fmt_updated].each do |name|
+    body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
     module_eval(body)
@@ -724,5 +724,24 @@ class TestParamInjection < Minitest::Test
     line = run_plugin.lines.find { |l| l.include?('param1=--set') }
     refute_nil line
     assert_match(/bash="[^"]+"/, line, 'шлях має бути в лапках')
+  end
+end
+
+class TestFmtUpdated < Minitest::Test
+  def test_iso_стає_місцевим_часом
+    # alerts.energy віддає UTC в ISO — показувати його сирим негарно
+    out = Pure.fmt_updated('2026-10-14T17:54:18.249Z')
+    assert_match(/\A\d{2}\.\d{2} \d{2}:\d{2}\z/, out)
+    refute_match(/T|Z/, out)
+  end
+
+  def test_готовий_рядок_не_чіпається
+    # GitHub-репозиторії віддають уже відформатований час
+    assert_equal '14.10.2026 20:54', Pure.fmt_updated('14.10.2026 20:54')
+  end
+
+  def test_сміття_не_ламає
+    assert_equal 'хтозна', Pure.fmt_updated('хтозна')
+    assert_equal '', Pure.fmt_updated(nil)
   end
 end

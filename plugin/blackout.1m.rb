@@ -442,6 +442,17 @@ def url_part(str)
   v.match?(%r{\A[\w.~-]{1,120}\z}) ? v : nil
 end
 
+# Джерела віддають час по-різному: alerts.energy — ISO в UTC,
+# репозиторії — вже відформатований рядок. Зводимо до місцевого часу.
+def fmt_updated(str)
+  v = safe(str)
+  return v unless v.match?(/\A\d{4}-\d{2}-\d{2}T/)
+
+  Time.parse(v).localtime.strftime('%d.%m %H:%M')
+rescue StandardError
+  v
+end
+
 def fmt(minutes)
   format('%d:%02d', minutes / 60, minutes % 60)
 end
@@ -786,7 +797,7 @@ begin
   # ── Налаштування ────────────────────────────────────────────────────
 
   puts '---'
-  updated = safe(data.dig('fact', 'update') || data['lastUpdated'])
+  updated = fmt_updated(data.dig('fact', 'update') || data['lastUpdated'])
   mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
   puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
 
