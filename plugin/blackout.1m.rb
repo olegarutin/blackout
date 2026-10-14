@@ -108,6 +108,10 @@ end
 
 # кеш і конфіг — лише для власника
 def ensure_dir(dir)
+  # Якщо сама тека — посилання, ми писали б свої файли в чужу теку
+  # й могли замінити те, що там уже лежить під нашими назвами
+  raise "refusing symlinked dir: #{dir}" if File.symlink?(dir)
+
   FileUtils.mkdir_p(dir, mode: 0o700)
 end
 
@@ -280,29 +284,30 @@ def fetch_shutdowns(slug)
   ensure_dir(CACHE)
   path = File.join(CACHE, "sd-#{slug}.json")
 
-  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
-    cached = read_cache(path)
-    return cached.nil? || cached.empty? ? nil : cached
-  end
+  # Свіжий кеш — відповідь остаточна, навіть якщо він порожній:
+  # інакше кожен запуск ходив би в мережу по «нічого немає»
+  return cached_rows(path) if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
 
   body, etag = http_get(format(SHUTDOWNS, slug), read_etag(path))
 
   if body.nil?
     touch_cache(path)
-    cached = read_cache(path)
-    return cached.nil? || cached.empty? ? nil : cached
+    return cached_rows(path)
   end
 
   parsed = JSON.parse(body)
-  raise 'unexpected schema' unless parsed.is_a?(Array)
-  raise 'bad rows' unless parsed.all? { |r| r.is_a?(Hash) && r['queue'].to_s.match?(/\A\d{1,3}\.\d{1,2}\z/) }
+  raise 'unexpected schema' unless valid_rows?(parsed)
 
   atomic_write(path, body)
   write_etag(path, etag)
   parsed.empty? ? nil : parsed
 rescue StandardError
-  cached = File.exist?(path) ? read_cache(path) : nil
-  cached.nil? || cached.empty? ? nil : cached
+  cached_rows(path)
+end
+
+def cached_rows(path)
+  rows = read_cache(path)
+  rows.nil? || rows.empty? || !valid_rows?(rows) ? nil : rows
 end
 
 # Рядок потрібної черги у форматі, який розуміє решта коду.
@@ -330,7 +335,10 @@ def read_etag(path)
   return nil unless File.exist?("#{path}.etag")
   return nil unless read_cache(path)
 
-  File.read("#{path}.etag")
+  etag = File.read("#{path}.etag")
+  # Значення йде в заголовок If-None-Match. Ruby сам відкидає CR/LF,
+  # але мегабайтний «ETag» із підмінного файлу він відправив би як є
+  etag if etag.match?(/\A[\x20-\x7e]{1,200}\z/)
 rescue StandardError
   nil
 end
@@ -367,6 +375,21 @@ def valid_schedule?(doc)
         hours.values.all? { |v| HOUR_VALUES.include?(v) }
     end
   end
+end
+
+# Схема перевірялась лише на записі, а з кешу дані повертались як є.
+# Назва черги звідти йде в параметри пункту меню, тож пошкоджений або
+# підмінений кеш міг підсунути власний bash=. Перевіряємо і на читанні.
+def read_schedule(path)
+  doc = read_cache(path)
+  doc if valid_schedule?(doc)
+end
+
+# Рядки alerts.energy: приймаємо лише ті, де черга має очікувану форму —
+# з неї складається ключ GPV…, що потім стає значенням параметра
+def valid_rows?(rows)
+  rows.is_a?(Array) &&
+    rows.all? { |r| r.is_a?(Hash) && r['queue'].to_s.match?(/\A\d{1,3}\.\d{1,2}\z/) }
 end
 
 # Перетворює рядки alerts.energy у той самий формат, що й GitHub-джерела,
@@ -434,7 +457,7 @@ def fetch_from_github(region)
   path = File.join(CACHE, "#{region}.json")
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
-    cached = read_cache(path)
+    cached = read_schedule(path)
     return [cached, :cache] if cached
   end
 
@@ -444,7 +467,7 @@ def fetch_from_github(region)
   # 304 — дані ті самі, лише відсуваємо час наступної перевірки
   if body.nil?
     touch_cache(path)
-    return [read_cache(path), :cache]
+    return [read_schedule(path), :cache]
   end
 
   parsed = JSON.parse(body)
@@ -455,7 +478,7 @@ def fetch_from_github(region)
   [parsed, :fresh]
 rescue StandardError
   # Свіжі дані не прийшли або не пройшли перевірку — останні відомі
-  old = File.exist?(path) ? read_cache(path) : nil
+  old = read_schedule(path)
   old ? [old, :stale] : [nil, :error]
 end
 
@@ -892,7 +915,8 @@ begin
                (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }
              end
     # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
-  groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
+  groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
+           .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
       sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
       puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=\"#{SELF}\" " \
            "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"

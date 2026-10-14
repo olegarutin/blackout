@@ -38,7 +38,7 @@ module Pure
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
      siren_prefix as_schedule fmt_updated read_etag read_cache
-     atomic_write touch_cache ensure_dir].each do |name|
+     atomic_write touch_cache ensure_dir read_schedule valid_rows?].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -403,6 +403,31 @@ class TestIntegration < Minitest::Test
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--warn', '999999')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
     assert_equal 720, cfg['warn_minutes']
+  end
+
+  # Назва черги з кешу йде у значення param3 пункту меню. Доки схема
+  # перевірялась лише на записі, підмінений кеш міг додати власний bash=.
+  def test_отруєна_назва_черги_з_кешу_не_йде_в_параметри
+    day = Date.today
+    ts = Time.new(day.year, day.month, day.day).to_i
+    hours = (1..24).to_h { |i| [i.to_s, 'yes'] }
+    poison = 'GPV9.9 bash=/usr/bin/touch param1=/tmp/BLACKOUT_PWNED'
+    write_cache('Cherkasyoblenergo',
+                'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => hours, poison => hours } },
+                            'today' => ts })
+    write_energy
+    write_notice
+    write_cache('alerts', { 'states' => {} })
+
+    out = run_plugin.first
+    refute_match(/BLACKOUT_PWNED/, out, 'отруєна назва черги потрапила у вивід')
+    out.each_line do |line|
+      params = line.split('|', 2)[1]
+      next unless params
+
+      assert_operator params.scan(/(?:\A|\s)bash=/).size, :<=, 1,
+                       "два bash= в одному пункті: #{line}"
+    end
   end
 
   def test_у_виводі_немає_селекторів_варіації
@@ -780,6 +805,48 @@ class TestCacheIntegrity < Minitest::Test
     File.write("#{path}.etag", 'W/"abc123"')
     assert_nil Pure.read_etag(path)
   end
+
+  # ETag іде в заголовок If-None-Match. Ruby відкидає CR/LF сам,
+  # але мегабайтне значення відправив би як є.
+  def test_велетенський_etag_відкидається
+    path = File.join(@cache, 'alerts.json')
+    File.write(path, '{"states":{}}')
+    File.write("#{path}.etag", 'A' * 100_000)
+    assert_nil Pure.read_etag(path)
+  end
+
+  def test_etag_з_переносом_рядка_відкидається
+    path = File.join(@cache, 'alerts.json')
+    File.write(path, '{"states":{}}')
+    File.write("#{path}.etag", %(x\r\nX-Injected: 1))
+    assert_nil Pure.read_etag(path)
+  end
+
+  # Схема перевірялась лише на записі, тож пошкоджений кеш повертався як є
+  def test_кеш_з_невідомою_схемою_не_використовується
+    path = File.join(@cache, 'Cherkasyoblenergo.json')
+    File.write(path, JSON.generate('fact' => { 'data' => { 'не-дата' => {} } }))
+    assert_nil Pure.read_schedule(path)
+  end
+
+  def test_справний_кеш_графіка_приймається
+    ts = Time.new(Date.today.year, Date.today.month, Date.today.day).to_i
+    path = File.join(@cache, 'Cherkasyoblenergo.json')
+    File.write(path, JSON.generate(
+                       'fact' => { 'data' => { ts.to_s => {
+                         'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] }
+                       } } }
+                     ))
+    refute_nil Pure.read_schedule(path)
+  end
+
+  def test_рядки_alerts_energy_з_дивною_чергою_відкидаються
+    refute Pure.valid_rows?([{ 'queue' => '1.1 bash=/bin/sh' }])
+    refute Pure.valid_rows?([{ 'queue' => 'x' }])
+    refute Pure.valid_rows?('не масив')
+    assert Pure.valid_rows?([{ 'queue' => '1.1' }])
+    assert Pure.valid_rows?([])
+  end
 end
 
 # Зловмисна програма без особливих прав може підкласти в кеш символьне
@@ -839,6 +906,17 @@ class TestSymlinkSafety < Minitest::Test
     path = File.join(@home, 'немає-такої-теки', 'alerts.json')
     assert_raises(StandardError) { Pure.atomic_write(path, '{}') }
     assert_empty Dir.glob(File.join(@home, '**', '*.tmp'))
+  end
+
+  # Якщо посиланням є сама тека, ми писали б свої файли в чужу
+  def test_тека_посилання_відмова
+    other = File.join(@home, 'чужа')
+    FileUtils.mkdir_p(other)
+    link = File.join(@home, 'link-cache')
+    File.symlink(other, link)
+
+    assert_raises(RuntimeError) { Pure.ensure_dir(link) }
+    assert_empty Dir.children(other)
   end
 
   def test_нова_тека_кешу_лише_для_власника
