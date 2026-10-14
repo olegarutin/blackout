@@ -219,7 +219,7 @@ def fetch_shutdowns(slug)
 
   if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
     cached = read_cache(path)
-    return cached&.empty? ? nil : cached
+    return cached.nil? || cached.empty? ? nil : cached
   end
 
   body, etag = http_get(format(SHUTDOWNS, slug), read_etag(path))
@@ -227,7 +227,7 @@ def fetch_shutdowns(slug)
   if body.nil?
     FileUtils.touch(path)
     cached = read_cache(path)
-    return cached&.empty? ? nil : cached
+    return cached.nil? || cached.empty? ? nil : cached
   end
 
   parsed = JSON.parse(body)
@@ -239,7 +239,7 @@ def fetch_shutdowns(slug)
   parsed.empty? ? nil : parsed
 rescue StandardError
   cached = File.exist?(path) ? read_cache(path) : nil
-  cached&.empty? ? nil : cached
+  cached.nil? || cached.empty? ? nil : cached
 end
 
 # Рядок потрібної черги у форматі, який розуміє решта коду.
@@ -409,13 +409,13 @@ end
 def minutes_until_change(today, tomorrow, now)
   idx = now.hour
   state = today[idx]
-  elapsed = now.hour * 60 + now.min
+  elapsed = (now.hour * 60) + now.min
 
   ((idx + 1)..23).each { |h| return (h * 60) - elapsed if today[h] != state }
   return nil unless tomorrow
 
   (0..23).each do |h|
-    return (24 * 60 - elapsed) + (h * 60) if tomorrow[h] != state
+    return ((24 * 60) - elapsed) + (h * 60) if tomorrow[h] != state
   end
   nil
 end
@@ -656,7 +656,7 @@ begin
 
     # 3. Скоро зміна стану
     if left && left <= WARN
-      slot = "#{key}/#{on ? 'off' : 'on'}/#{(now.to_i + left * 60) / 3600}"
+      slot = "#{key}/#{on ? 'off' : 'on'}/#{(now.to_i + (left * 60)) / 3600}"
       if state['warned'] != slot
         if on
           notify('Скоро вимкнуть', "Через #{left} хв. Черга #{QUEUE.sub('GPV', '')}")
@@ -745,7 +745,7 @@ begin
   segments(today).each do |from, to, lit|
     next if today.all?
 
-    here = !STALE && (from..to - 1).cover?(now.hour) ? '  ←' : ''
+    here = !STALE && (from..(to - 1)).cover?(now.hour) ? '  ←' : ''
     puts format('%s  %02d:00 – %02d:00%s | color=%s font=Menlo size=13',
                 lit ? '●' : '○', from, to, here, lit ? 'green' : 'red')
   end
