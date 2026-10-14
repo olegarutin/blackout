@@ -40,23 +40,33 @@ TTL_DATA  = 170
 TTL_ALERT = 55
 
 REGIONS = {
-  # id => [назва, джерело графіків, область для тривог, сайт обленерго, слаг для alerts.energy]
-  'Cherkasyoblenergo'     => ['Черкаська обл.',    :oe, 'Черкаська область',         'https://www.cherkasyoblenergo.com/static/perelik-gpv', 'cherkaska-oblast'],
-  'Chernihivoblenergo'    => ['Чернігівська обл.', :oe, 'Чернігівська область',      'https://www.chernihiv.energy/',        'chernigivska-oblast'],
-  'Kharkivoblenerho'      => ['Харківська обл.',   :oe, 'Харківська область',        'https://www.hoe.com.ua/',              'kharkivska-oblast'],
-  'Khmelnytskoblenerho'   => ['Хмельницька обл.',  :oe, 'Хмельницька область',       'https://www.hoe.com.ua/',              'khmelnytska-oblast'],
-  'Lvivoblenerho'         => ['Львівська обл.',    :oe, 'Львівська область',         'https://loe.lviv.ua/',                 'lvivska-oblast'],
-  'Poltavaoblenergo'      => ['Полтавська обл.',   :oe, 'Полтавська область',        'https://www.poe.pl.ua/',               'poltavska-oblast'],
-  'Prykarpattiaoblenerho' => ['Івано-Франківська', :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/',                'ivano-frankivska-oblast'],
-  'Rivneoblenergo'        => ['Рівненська обл.',   :oe, 'Рівненська область',        'https://www.roe.vsei.ua/',             'rivnenska-oblast'],
-  'Ternopiloblenerho'     => ['Тернопільська обл.', :oe, 'Тернопільська область',    'https://www.toe.com.ua/',              'ternopilska-oblast'],
-  'Zakarpattiaoblenerho'  => ['Закарпатська обл.', :oe, 'Закарпатська область',      'https://www.zakarpat.energy/',         'zakarpatska-oblast'],
-  'Zaporizhzhiaoblenergo' => ['Запорізька обл.',   :oe, 'Запорізька область',        'https://www.zoe.com.ua/',              'zaporizka-oblast'],
-  'Zhytomyroblenergo'     => ['Житомирська обл.',  :oe, 'Житомирська область',       'https://www.ztoe.com.ua/unhooking-search.php', 'zhytomyrska-oblast'],
-  'kyiv'                  => ['Київ',              :bk, 'м. Київ',                   'https://kyiv.yasno.com.ua/schedule-turn-off-electricity', 'kyiv'],
-  'kyiv-region'           => ['Київська обл.',     :bk, 'Київська область',          'https://www.dtek-krem.com.ua/ua/shutdowns', 'kyivska-oblast'],
-  'dnipro'                => ['Дніпро та обл.',    :bk, 'Дніпропетровська область',  'https://www.dtek-dnem.com.ua/ua/shutdowns', 'dnipropetrovska-oblast'],
-  'odesa'                 => ['Одеса та обл.',     :bk, 'Одеська область',           'https://www.dtek-oem.com.ua/ua/shutdowns',  'odeska-oblast']
+  # id => [назва, запасне джерело, область, сайт, слаг alerts.energy]
+  'Prykarpattiaoblenerho'    => ['Івано-Франківська', :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/', 'ivano-frankivska-oblast'],
+  'avtonomna-respublika-krym' => ['АР Крим', nil, 'Автономна Республіка Крим', 'https://alerts.energy/avtonomna-respublika-krym', 'avtonomna-respublika-krym'],
+  'volynska-oblast'          => ['Волинська обл.', nil, 'Волинська область', 'https://alerts.energy/volynska-oblast', 'volynska-oblast'],
+  'vinnytska-oblast'         => ['Вінницька обл.', nil, 'Вінницька область', 'https://alerts.energy/vinnytska-oblast', 'vinnytska-oblast'],
+  'dnipro'                   => ['Дніпро та обл.', :bk, 'Дніпропетровська область', 'https://www.dtek-dnem.com.ua/ua/shutdowns', 'dnipropetrovska-oblast'],
+  'donetska-oblast'          => ['Донецька обл.', nil, 'Донецька область', 'https://alerts.energy/donetska-oblast', 'donetska-oblast'],
+  'Zhytomyroblenergo'        => ['Житомирська обл.', :oe, 'Житомирська область', 'https://www.ztoe.com.ua/unhooking-search.php', 'zhytomyrska-oblast'],
+  'Zakarpattiaoblenerho'     => ['Закарпатська обл.', :oe, 'Закарпатська область', 'https://www.zakarpat.energy/', 'zakarpatska-oblast'],
+  'Zaporizhzhiaoblenergo'    => ['Запорізька обл.', :oe, 'Запорізька область', 'https://www.zoe.com.ua/', 'zaporizka-oblast'],
+  'kyiv-region'              => ['Київська обл.', :bk, 'Київська область', 'https://www.dtek-krem.com.ua/ua/shutdowns', 'kyivska-oblast'],
+  'kirovogradska-oblast'     => ['Кіровоградська обл.', nil, 'Кіровоградська область', 'https://alerts.energy/kirovogradska-oblast', 'kirovogradska-oblast'],
+  'luganska-oblast'          => ['Луганська обл.', nil, 'Луганська область', 'https://alerts.energy/luganska-oblast', 'luganska-oblast'],
+  'Lvivoblenerho'            => ['Львівська обл.', :oe, 'Львівська область', 'https://loe.lviv.ua/', 'lvivska-oblast'],
+  'mikolayivska-oblast'      => ['Миколаївська обл.', nil, 'Миколаївська область', 'https://alerts.energy/mikolayivska-oblast', 'mikolayivska-oblast'],
+  'odesa'                    => ['Одеса та обл.', :bk, 'Одеська область', 'https://www.dtek-oem.com.ua/ua/shutdowns', 'odeska-oblast'],
+  'Poltavaoblenergo'         => ['Полтавська обл.', :oe, 'Полтавська область', 'https://www.poe.pl.ua/', 'poltavska-oblast'],
+  'Rivneoblenergo'           => ['Рівненська обл.', :oe, 'Рівненська область', 'https://www.roe.vsei.ua/', 'rivnenska-oblast'],
+  'sumska-oblast'            => ['Сумська обл.', nil, 'Сумська область', 'https://alerts.energy/sumska-oblast', 'sumska-oblast'],
+  'Ternopiloblenerho'        => ['Тернопільська обл.', :oe, 'Тернопільська область', 'https://www.toe.com.ua/', 'ternopilska-oblast'],
+  'Kharkivoblenerho'         => ['Харківська обл.', :oe, 'Харківська область', 'https://www.hoe.com.ua/', 'kharkivska-oblast'],
+  'khersonska-oblast'        => ['Херсонська обл.', nil, 'Херсонська область', 'https://alerts.energy/khersonska-oblast', 'khersonska-oblast'],
+  'Khmelnytskoblenerho'      => ['Хмельницька обл.', :oe, 'Хмельницька область', 'https://www.hoe.com.ua/', 'khmelnytska-oblast'],
+  'Cherkasyoblenergo'        => ['Черкаська обл.', :oe, 'Черкаська область', 'https://www.cherkasyoblenergo.com/static/perelik-gpv', 'cherkaska-oblast'],
+  'chernivecka-oblast'       => ['Чернівецька обл.', nil, 'Чернівецька область', 'https://alerts.energy/chernivecka-oblast', 'chernivecka-oblast'],
+  'Chernihivoblenergo'       => ['Чернігівська обл.', :oe, 'Чернігівська область', 'https://www.chernihiv.energy/', 'chernigivska-oblast'],
+  'kyiv'                     => ['Київ', :bk, 'м. Київ', 'https://kyiv.yasno.com.ua/schedule-turn-off-electricity', 'kyiv']
 }.freeze
 
 SRC = { oe: OE_SRC, bk: BK_SRC }.freeze
@@ -544,13 +554,23 @@ begin
     end
   end
 
+  # Рівень обмежень по області — потрібен і для аварійних,
+  # і щоб пояснити відсутність графіка
+  area = (fetch_energy || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
+  emergency = area && area['level'].to_i >= 3 ? safe(area['label']) : nil
+
   data, status = fetch_data(REGION)
 
   if data.nil?
-    puts '❌ немає даних'
+    # Графіка немає — це не обов'язково збій. Рівень обмежень
+    # зазвичай пояснює причину краще за наше «не вдалося».
+    label = area && safe(area['label'])
+    puts(emergency ? "#{siren_prefix(alert)}🚨" : "#{siren_prefix(alert)}❔")
     puts '---'
-    puts 'Не вдалося завантажити графік | color=red'
-    puts "Відкрити джерело | href=#{SRC[REGIONS.dig(REGION, 1)]}/#{REGION}.json"
+    puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
+    puts "#{label || 'Графіка немає'} | color=#{emergency ? 'red' : 'orange'} size=14"
+    puts 'Оператор не публікує графіків для цієї області | size=11 color=gray' unless emergency
+    render_alert(alert)
     exit
   end
 
@@ -589,6 +609,18 @@ begin
   today    = hours_for(data, QUEUE, today_key)
   tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
 
+  # Під час аварійних графіка для черги просто немає — це очікувано,
+  # і казати «черга відсутня» було б дезорієнтуванням
+  if today.nil? && emergency
+    puts "#{siren_prefix(alert)}🚨"
+    puts '---'
+    puts "#{REGIONS.dig(REGION, 0) || REGION} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
+    puts "#{emergency} | color=red size=14"
+    puts 'Графіка на цю чергу немає — відключають поза ним | size=11 color=gray'
+    render_alert(alert)
+    exit
+  end
+
   unless today
     puts '❌ немає черги'
     puts '---'
@@ -602,11 +634,6 @@ begin
   left = minutes_until_change(today, tomorrow, now)
 
   # ── Перевірка змін і попередження ───────────────────────────────────
-
-  # Рівень обмежень по області: 3 і вище — аварійні відключення,
-  # під час яких графік не діє
-  area = (fetch_energy || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
-  emergency = area && area['level'].to_i >= 3 ? safe(area['label']) : nil
 
   state = load_state
   key = "#{REGION}/#{QUEUE}/#{today_key}"
