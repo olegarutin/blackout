@@ -482,3 +482,41 @@ class TestEmergency < Minitest::Test
     refute_includes params.to_s, 'bash='
   end
 end
+
+class TestDaySelection < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-day')
+    FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    File.write(File.join(@home, '.cache', 'blackout', 'alerts.json'), '{"states":{}}')
+    File.write(File.join(@home, '.cache', 'blackout', 'energy.json'), '[]')
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def ts(offset)
+    d = Date.today + offset
+    Time.new(d.year, d.month, d.day).to_i
+  end
+
+  def test_бере_сьогоднішній_день_навіть_коли_поле_today_відстає
+    # Опівночі джерело ще віддає вчорашнє fact.today, хоча сьогоднішній
+    # графік у файлі вже є. Старий код показував би ❔
+    doc = { 'fact' => {
+      'data' => {
+        ts(-1).to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'no'] } },
+        ts(0).to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } }
+      },
+      'today' => ts(-1)
+    } }
+    File.write(File.join(@home, '.cache', 'blackout', 'Cherkasyoblenergo.json'),
+               JSON.generate(doc))
+    out, = Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                            'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN)
+    refute_match(/❔/, out.lines.first, 'мав взяти сьогоднішній день')
+    assert_match(/💡/, out.lines.first)
+    assert_match(/Сьогодні/, out)
+  end
+end

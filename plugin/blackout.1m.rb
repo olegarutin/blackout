@@ -424,9 +424,12 @@ begin
     exit
   end
 
-  # fact.today інколи вказує на день, якого немає в data — тоді беремо найсвіжіший
+  # Спершу шукаємо день із сьогоднішньою датою: поле fact.today опівночі
+  # відстає, і без цієї перевірки ми показували б учорашній графік,
+  # хоча сьогоднішній уже лежить у файлі.
   declared = data.dig('fact', 'today')&.to_s
-  today_key = day_keys.include?(declared) ? declared : day_keys.last
+  actual = day_keys.find { |k| Time.at(k.to_i).to_date == Date.today }
+  today_key = actual || (day_keys.include?(declared) ? declared : day_keys.last)
   tomorrow_key = day_keys[day_keys.index(today_key) + 1]
 
   day_date = Time.at(today_key.to_i).to_date
