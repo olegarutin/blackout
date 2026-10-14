@@ -20,6 +20,10 @@ SELF = File.expand_path(__FILE__)
 OE_SRC = 'https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data'
 BK_SRC = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data'
 ALERTS = 'https://vadimklimenko.com/map/statuses.json'
+# Рівень обмежень по областях: 0 — немає даних чи відключень,
+# 2 — погодинні графіки, 3 — аварійні. Саме звідси беремо «аварійні»,
+# бо в самих графіках такої ознаки немає.
+ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
 CACHE  = File.join(Dir.home, '.cache', 'blackout')
 CONFIG = File.join(Dir.home, '.config', 'blackout.json')
 STATE  = File.join(CACHE, 'state.json')
@@ -80,10 +84,6 @@ when '--notify'
   cfg['notify'] = (ARGV[1] == 'on')
   save_config(cfg)
   exit
-when '--power'
-  cfg['power_check'] = (ARGV[1] == 'on')
-  save_config(cfg)
-  exit
 when '--alerts'
   cfg['alerts'] = (ARGV[1] == 'on')
   save_config(cfg)
@@ -100,10 +100,14 @@ REGION = REGIONS.key?(raw_region) ? raw_region : 'Cherkasyoblenergo'
 QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
 WARN   = (cfg['warn_minutes'] || 15).to_i
 NOTIFY = cfg.fetch('notify', true)
-POWER  = cfg.fetch('power_check', true)
 ALERTS_ON = cfg.fetch('alerts', true)
 
 # ── Дані ────────────────────────────────────────────────────────────
+
+# Значення годин, які документує джерело (preset.time_type).
+# 'maybe*' зараз у даних не трапляються, але закладені у формат —
+# без них валідатор відкинув би валідний файл цілком.
+HOUR_VALUES = %w[yes no first second maybe mfirst msecond].freeze
 
 MAX_BODY  = 2 * 1024 * 1024 # 2 МБ — реальні файли важать 15–300 КБ
 OPEN_TIME = 5               # секунд на встановлення з'єднання
@@ -131,6 +135,33 @@ def http_get(url, etag = nil)
 
     [res.body, res['etag']]
   end
+end
+
+# Рівень обмежень для нашої області. nil — якщо даних немає.
+def fetch_energy
+  FileUtils.mkdir_p(CACHE)
+  path = File.join(CACHE, 'energy.json')
+
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_ALERT
+    cached = read_cache(path)
+    return cached if cached
+  end
+
+  body, etag = http_get(ENERGY, read_etag(path))
+
+  if body.nil?
+    FileUtils.touch(path)
+    return read_cache(path)
+  end
+
+  parsed = JSON.parse(body)
+  raise 'unexpected schema' unless parsed.is_a?(Array)
+
+  File.write(path, body)
+  write_etag(path, etag)
+  parsed
+rescue StandardError
+  File.exist?(path) ? read_cache(path) : nil
 end
 
 def read_etag(path)
@@ -168,7 +199,7 @@ def valid_schedule?(doc)
       name.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) &&
         hours.is_a?(Hash) &&
         hours.keys.all? { |h| (1..24).cover?(h.to_i) } &&
-        hours.values.all? { |v| %w[yes no first second].include?(v) }
+        hours.values.all? { |v| HOUR_VALUES.include?(v) }
     end
   end
 end
@@ -208,7 +239,9 @@ def hours_for(data, queue, day_key)
   raw = data.dig('fact', 'data', day_key, queue)
   return nil unless raw
 
-  # 'yes' — світло є, 'no' — немає, 'first' — немає в першій половині години
+  # Світло є лише при 'yes'. Усе інше — відключення повне, часткове
+  # або ймовірне; усі ці випадки трактуємо як «світла не буде»,
+  # бо помилитись у цей бік безпечніше.
   (1..24).map { |h| raw[h.to_s] == 'yes' }
 end
 
@@ -308,31 +341,6 @@ def render_alert(alert)
     puts "Райони: #{safe(alert[:districts].join(', '))} | size=11 color=gray"
   end
   puts 'Жовтий — дрони · червоний — ракети | size=11 color=gray'
-end
-
-# ── Живлення ────────────────────────────────────────────────────────
-
-# Mac знає, чи є струм у розетці. Якщо графік каже «світло є»,
-# а ноут перейшов на батарею — схоже на аварійне відключення.
-def ac_power?
-  out = `pmset -g batt 2>/dev/null`
-  return nil if out.empty?
-
-  out.include?('AC Power')
-rescue StandardError
-  nil
-end
-
-# Коли вимикають світло, роутер теж замовкає. Якщо він відповідає —
-# струм у будинку є, а ноут на батареї просто тому, що його від'єднали.
-# Повертає true / false / nil, якщо шлюз визначити не вдалось.
-def power_at_home?
-  gw = `netstat -rn -f inet 2>/dev/null`[/^default\s+(\S+)/, 1]
-  return nil unless gw&.match?(/\A[\d.]+\z/)
-
-  system('ping', '-c', '1', '-t', '1', gw, out: File::NULL, err: File::NULL)
-rescue StandardError
-  nil
 end
 
 # ── Сповіщення ──────────────────────────────────────────────────────
@@ -446,35 +454,12 @@ begin
 
   # ── Перевірка змін і попередження ───────────────────────────────────
 
+  # Рівень обмежень по області: 3 і вище — аварійні відключення,
+  # під час яких графік не діє
+  area = (fetch_energy || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
+  emergency = area && area['level'].to_i >= 3 ? safe(area['label']) : nil
+
   state = load_state
-
-  ac = POWER && !STALE ? ac_power? : nil
-
-  # Одного лише стану батареї недостатньо: ноут може бути просто не ввімкнений
-  # у розетку. Справжнє відключення — це ПЕРЕХІД з мережі на батарею.
-  # Тому дивимось, чи був ноут у мережі нещодавно.
-  # Опитування щохвилини, тож довга пам'ять не потрібна.
-# Двадцять хвилин робили «аварію» з кожного від'єднання зарядки.
-RECENT = 3 * 60 # секунд
-
-  now_ts = Time.now.to_i
-  state['ac_last'] = now_ts if ac
-  was_plugged = state['ac_last'] && (now_ts - state['ac_last']) < RECENT
-
-  mismatch =
-    if ac.nil?
-      nil
-    elsif on && !ac
-      # Графік обіцяє світло, живлення немає. Два фільтри проти хибних
-      # спрацювань: ноут мав бути в розетці щойно, і роутер має мовчати.
-      # Роутер відповідає — струм у будинку є, зарядку просто від'єднали.
-      was_plugged && power_at_home? == false ? true : nil
-    elsif !on && ac
-      # графік каже «немає», а струм є — дали раніше
-      true
-    else
-      false
-    end
   key = "#{REGION}/#{QUEUE}/#{today_key}"
   digest = Digest::SHA256.hexdigest(today.map { |b| b ? '1' : '0' }.join)
 
@@ -486,19 +471,11 @@ RECENT = 3 * 60 # секунд
       notify('Графік змінився', "Черга #{QUEUE.sub('GPV', '')} · без світла: #{changed}")
     end
 
-    # 2. Живлення розійшлося з графіком
-    if mismatch
-      flag = "#{key}/#{on}/#{ac}"
-      if state['mismatch'] != flag
-        if on
-          notify('Світло зникло поза графіком', 'За графіком мало бути. Схоже на аварійне відключення.')
-        else
-          notify('Світло з\'явилось раніше', 'За графіком ще має бути відключення.')
-        end
-        state['mismatch'] = flag
-      end
-    elsif mismatch == false
-      state['mismatch'] = nil
+    # 2. Почались або скінчились аварійні відключення
+    if state['emergency'] != emergency.to_s
+      notify('Аварійні відключення', 'Графік не діє — відключають поза ним') if emergency
+      notify('Повернулись до графіка', 'Аварійні відключення скасовано') if state['emergency'].to_s != '' && !emergency
+      state['emergency'] = emergency.to_s
     end
 
     # 3. Скоро зміна стану
@@ -543,28 +520,20 @@ RECENT = 3 * 60 # секунд
     puts "Графік за #{day_date.strftime('%d.%m.%Y')} — #{age} дн. тому | color=red size=12"
     puts 'Джерело не оновлює цей регіон. Не покладайся на розклад нижче. | size=11 color=gray'
   else
-    # 💡 світло є · 🕯️ немає за графіком · 🚨 аварійне (графік обіцяв, а світла нема)
-    icon = if mismatch && on then '🚨'
-           else (mismatch ? ac : on) ? '💡' : '🕯️'
-           end
-    # Під час аварійного графік не діє, тож відлік за ним показувати нечесно
+    # 🚨 аварійні відключення — графік не діє, відлік за ним показувати нечесно
+    icon = emergency ? '🚨' : (on ? '💡' : '🕯️')
     urgent = left && left <= WARN ? ' ⏳' : ''
     siren = siren_prefix(alert)
-    puts(if mismatch && on then "#{siren}#{icon}"
+    puts(if emergency then "#{siren}🚨"
          elsif left then "#{siren}#{icon} #{fmt(left)}#{urgent}"
          else "#{siren}#{icon}"
          end)
     puts '---'
     puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
-    # Головний рядок завжди починається з реальності, а не з графіка
-    if mismatch && on
-      puts 'Світла немає — схоже на аварійне | color=red size=14'
-      puts "За графіком мало бути світло до #{fmt(left)} | size=12 color=gray" if left
-      puts 'Коли дадуть — графік не підкаже | size=11 color=gray'
-    elsif mismatch
-      puts 'Світло є | color=green size=14'
-      puts(left ? "Дали раніше — за графіком ще #{fmt(left)} без світла | size=12 color=gray"
-                : 'Дали раніше за графік | size=12 color=gray')
+    if emergency
+      puts "#{emergency} | color=red size=14"
+      puts 'Графік не діє — відключають поза ним | size=12 color=gray'
+      puts "За графіком зараз #{on ? 'мало бути світло' : 'і так відключення'} | size=11 color=gray"
     elsif on
       puts(if left then "Світло є · вимкнуть через #{fmt(left)} | color=green size=14"
            elsif today.all? then 'Світло є · відключень сьогодні немає | color=green size=14'
@@ -573,10 +542,6 @@ RECENT = 3 * 60 # секунд
     else
       puts(left ? "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
                 : 'Світла немає | color=red size=14')
-    end
-
-    if ac.nil? && POWER && !was_plugged
-      puts 'Ноут давно не в розетці — звірка з живленням неактивна | size=11 color=gray'
     end
   end
 
@@ -640,8 +605,6 @@ RECENT = 3 * 60 # секунд
 
   puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
 
-  puts "--#{POWER ? '✓ ' : ''}Звіряти з живленням ноута | size=11 bash=#{SELF} " \
-       "terminal=false refresh=true param1=--power param2=#{POWER ? 'off' : 'on'}"
   puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=#{SELF} " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
   puts '--Сповіщення | size=11'

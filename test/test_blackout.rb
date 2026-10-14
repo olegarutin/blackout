@@ -22,6 +22,14 @@ SOURCE = File.read(PLUGIN)
 
 # Витягуємо чисті функції без запуску скрипта
 module Pure
+  # Константи, на які вони спираються
+  %w[HOUR_VALUES].each do |const|
+    body = SOURCE[/^#{const}\s*=.*?freeze$/m]
+    raise "не знайдено константу #{const}" unless body
+
+    module_eval(body)
+  end
+
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
      siren_prefix].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}.*?\n^end$/m]
@@ -200,6 +208,13 @@ class TestIntegration < Minitest::Test
     File.write(File.join(@home, '.cache', 'blackout', "#{name}.json"), JSON.generate(doc))
   end
 
+  # Рівень обмежень по областях. Без цього тести лізуть у мережу.
+  def write_energy(level = 2)
+    write_cache('energy', [{ 'name' => 'Черкаська область', 'slug' => 'cherkaska-oblast',
+                             'level' => level, 'label' => level >= 3 ? 'Аварійні відключення' : 'Погодинні графіки відключень',
+                             'updated' => Time.now.iso8601 }])
+  end
+
   def schedule(day_offset: 0, hours: nil)
     day = Date.today + day_offset
     ts = Time.new(day.year, day.month, day.day).to_i
@@ -218,6 +233,7 @@ class TestIntegration < Minitest::Test
 
   def test_показує_графік_із_кешу_без_мережі
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, err, st = run_plugin
     assert_equal 0, st.exitstatus
@@ -227,6 +243,7 @@ class TestIntegration < Minitest::Test
 
   def test_застарілі_дані_позначаються
     write_cache('Cherkasyoblenergo', schedule(day_offset: -90))
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     assert_match(/📅/, out.lines.first)
@@ -235,6 +252,7 @@ class TestIntegration < Minitest::Test
 
   def test_вчорашній_графік_це_невідомість_а_не_застарілість
     write_cache('Cherkasyoblenergo', schedule(day_offset: -1))
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     assert_match(/❔/, out.lines.first)
@@ -243,6 +261,7 @@ class TestIntegration < Minitest::Test
 
   def test_невідомий_регіон_відкочується_на_типовий
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, _, st = run_plugin('BLACKOUT_REGION' => '../../etc/passwd')
     assert_equal 0, st.exitstatus
@@ -251,6 +270,7 @@ class TestIntegration < Minitest::Test
 
   def test_інєкція_через_чергу_не_проходить
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin('BLACKOUT_QUEUE' => 'GPV1.1 | bash=/bin/sh')
     refute_match(%r{bash=/bin/sh}, out)
@@ -258,6 +278,7 @@ class TestIntegration < Minitest::Test
 
   def test_назва_району_з_мережі_санітизується
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -285,6 +306,7 @@ class TestIntegration < Minitest::Test
 
   def test_пошкоджений_кеш_не_кладе_скрипт
     File.write(File.join(@home, '.cache', 'blackout', 'Cherkasyoblenergo.json'), '{зламано')
+    write_energy
     write_cache('alerts', { 'states' => {} })
     _, err, st = run_plugin
     assert_equal 0, st.exitstatus
@@ -293,6 +315,7 @@ class TestIntegration < Minitest::Test
 
   def test_зіпсована_дата_тривоги_не_кладе_скрипт
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -310,6 +333,7 @@ class TestIntegration < Minitest::Test
   def test_тривога_лише_по_районах_помічається
     # Прапорець області лишається false, горять тільки райони
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', {
                   'states' => {
                     'Черкаська область' => {
@@ -328,6 +352,7 @@ class TestIntegration < Minitest::Test
 
   def test_перемикач_не_приймає_чужий_регіон
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'зловмисний', 'GPV1.1')
     cfg = File.join(@home, '.config', 'blackout.json')
@@ -336,6 +361,7 @@ class TestIntegration < Minitest::Test
 
   def test_перемикач_приймає_відомий_регіон
     write_cache('kyiv', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--set', 'kyiv', 'GPV5.1')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
@@ -345,6 +371,7 @@ class TestIntegration < Minitest::Test
 
   def test_попередження_обмежене_діапазоном
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, '--warn', '999999')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
@@ -354,9 +381,104 @@ class TestIntegration < Minitest::Test
   def test_у_виводі_немає_селекторів_варіації
     # U+FE0F малюється квадратиком у шрифті menu bar
     write_cache('Cherkasyoblenergo', schedule)
+    write_energy
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     refute_includes out.lines.first, '️',
                     'перший рядок не має містити U+FE0F'
+  end
+end
+
+class TestHourValues < Minitest::Test
+  def doc(value)
+    { 'fact' => { 'data' => { '1791406800' => { 'GPV1.1' => { '1' => value } } } } }
+  end
+
+  def test_приймає_всі_документовані_значення
+    # preset.time_type у джерелі: yes, no, first, second, maybe, mfirst, msecond
+    %w[yes no first second maybe mfirst msecond].each do |v|
+      assert Pure.valid_schedule?(doc(v)), "значення #{v} має прийматись"
+    end
+  end
+
+  def test_відхиляє_недокументоване
+    refute Pure.valid_schedule?(doc('<script>'))
+    refute Pure.valid_schedule?(doc('possibly'))
+  end
+
+  def test_світло_лише_при_yes
+    # Часткові й імовірні відключення трактуємо як «світла не буде»
+    %w[no first second maybe mfirst msecond].each do |v|
+      h = Pure.hours_for({ 'fact' => { 'data' => { 'd' => { 'GPV1.1' => { '1' => v } } } } },
+                         'GPV1.1', 'd')
+      refute h[0], "значення #{v} не має рахуватись як світло"
+    end
+  end
+end
+
+class TestEmergency < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-emergency')
+    FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    day = Date.today
+    ts = Time.new(day.year, day.month, day.day).to_i
+    write('Cherkasyoblenergo',
+          'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } },
+                      'today' => ts })
+    write('alerts', 'states' => {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def write(name, doc)
+    File.write(File.join(@home, '.cache', 'blackout', "#{name}.json"), JSON.generate(doc))
+  end
+
+  def energy(level, label)
+    write('energy', [{ 'name' => 'Черкаська область', 'level' => level, 'label' => label }])
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_рівень_3_це_аварійні
+    energy(3, 'Аварійні відключення')
+    out = run_plugin
+    assert_match(/🚨/, out.lines.first)
+    assert_match(/Графік не діє/, out)
+  end
+
+  def test_під_час_аварійних_відлік_не_показується
+    # Графік не діє, тож показувати за ним час до зміни було б брехнею
+    energy(3, 'Аварійні відключення')
+    assert_equal '🚨', run_plugin.lines.first.strip
+  end
+
+  def test_рівень_2_це_звичайний_графік
+    energy(2, 'Погодинні графіки відключень')
+    out = run_plugin
+    refute_match(/🚨/, out.lines.first)
+    assert_match(/💡/, out.lines.first)
+  end
+
+  def test_невідома_область_не_ламає
+    write('energy', [{ 'name' => 'Марсіанська область', 'level' => 3, 'label' => 'Аварійні' }])
+    out, err, st = Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                                    'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN)
+    assert_equal 0, st.exitstatus
+    assert_empty err
+    refute_match(/🚨/, out.lines.first)
+  end
+
+  def test_мітка_з_мережі_санітизується
+    energy(3, 'Аварійні | bash=/bin/sh')
+    line = run_plugin.lines.find { |l| l.include?('Аварійні') }
+    _title, params = line.split('|', 2)
+    refute_includes params.to_s, 'bash='
   end
 end
