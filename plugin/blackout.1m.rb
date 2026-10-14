@@ -19,6 +19,12 @@ require 'date'
 # при записі, а Net::HTTP віддає тіло бінарним — запис падав би,
 # лишаючи порожній файл у кеші.
 Encoding.default_external = Encoding::UTF_8
+
+# ENV і ARGV без локалі приходять як ASCII-8BIT, і зіставлення
+# з UTF-8 регуляркою падає. Позначаємо явно.
+def utf8(str)
+  str.nil? ? nil : str.dup.force_encoding(Encoding::UTF_8)
+end
 require 'time'
 
 # Шлях до себе підставляється в bash= пунктів меню. Якщо застосунок
@@ -97,10 +103,10 @@ cfg = load_config
 
 case ARGV[0]
 when '--set'
-  exit unless REGIONS.key?(ARGV[1]) && ARGV[2].to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)
+  exit unless REGIONS.key?(utf8(ARGV[1])) && utf8(ARGV[2]).to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)
 
-  cfg['region'] = ARGV[1]
-  cfg['queue']  = ARGV[2]
+  cfg['region'] = utf8(ARGV[1])
+  cfg['queue']  = utf8(ARGV[2])
   save_config(cfg)
   exit
 when '--warn'
@@ -118,7 +124,7 @@ when '--alerts'
 when '--district'
   # Порожнє значення означає «вся область». Назва району приходить
   # із меню, побудованого з даних мережі, тож перевіряємо форму.
-  d = ARGV[1].to_s
+  d = utf8(ARGV[1]).to_s
   exit unless d.empty? || d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
 
   cfg['district'] = d.empty? ? nil : d
@@ -129,8 +135,8 @@ end
 # Регіон стає частиною URL і шляху до кешу, тож приймаємо лише відомі ключі.
 # Чергу — лише за суворим шаблоном: вона потрапляє у текст меню,
 # а SwiftBar читає '|' як початок параметрів.
-raw_region = ENV['BLACKOUT_REGION'] || cfg['region'] || 'Cherkasyoblenergo'
-raw_queue  = ENV['BLACKOUT_QUEUE']  || cfg['queue']  || 'GPV1.1'
+raw_region = utf8(ENV['BLACKOUT_REGION']) || cfg['region'] || 'Cherkasyoblenergo'
+raw_queue  = utf8(ENV['BLACKOUT_QUEUE'])  || cfg['queue']  || 'GPV1.1'
 
 REGION = REGIONS.key?(raw_region) ? raw_region : 'Cherkasyoblenergo'
 QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
@@ -139,7 +145,7 @@ NOTIFY = cfg.fetch('notify', true)
 ALERTS_ON = cfg.fetch('alerts', true)
 # Назва району приходила з меню, яке будується з даних мережі,
 # тож перевіряємо форму, перш ніж довіряти
-raw_district = ENV['BLACKOUT_DISTRICT'] || cfg['district']
+raw_district = utf8(ENV['BLACKOUT_DISTRICT']) || cfg['district']
 DISTRICT = raw_district.to_s.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/) ? raw_district : nil
 
 # ── Дані ────────────────────────────────────────────────────────────
