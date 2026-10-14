@@ -27,6 +27,9 @@ ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
 # Головна новина енергосистеми від Укренерго — пояснює, ЧОМУ відключають.
 # Графік каже «коли», а це «через що»: атака, дефіцит, ремонт.
 NOTICE = 'https://alerts.energy/api/v1/notices'
+# Основне джерело графіків: свіжіше за GitHub-репозиторії й з явними
+# статусами замість здогадок. Репозиторії лишаються запасним варіантом.
+SHUTDOWNS = 'https://alerts.energy/api/v1/source-registry/areas/%s/shutdowns'
 TTL_NEWS = 600 # новини не міняються щохвилини
 CACHE  = File.join(Dir.home, '.cache', 'blackout')
 CONFIG = File.join(Dir.home, '.config', 'blackout.json')
@@ -37,22 +40,23 @@ TTL_DATA  = 170
 TTL_ALERT = 55
 
 REGIONS = {
-  'Cherkasyoblenergo'     => ['Черкаська обл.',     :oe, 'Черкаська область',         'https://www.cherkasyoblenergo.com/static/perelik-gpv'],
-  'Chernihivoblenergo'    => ['Чернігівська обл.',  :oe, 'Чернігівська область',      'https://www.chernihiv.energy/'],
-  'Kharkivoblenerho'      => ['Харківська обл.',    :oe, 'Харківська область',        'https://www.hoe.com.ua/'],
-  'Khmelnytskoblenerho'   => ['Хмельницька обл.',   :oe, 'Хмельницька область',       'https://www.hoe.com.ua/'],
-  'Lvivoblenerho'         => ['Львівська обл.',     :oe, 'Львівська область',         'https://loe.lviv.ua/'],
-  'Poltavaoblenergo'      => ['Полтавська обл.',    :oe, 'Полтавська область',        'https://www.poe.pl.ua/'],
-  'Prykarpattiaoblenerho' => ['Івано-Франківська',  :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/'],
-  'Rivneoblenergo'        => ['Рівненська обл.',    :oe, 'Рівненська область',        'https://www.roe.vsei.ua/'],
-  'Ternopiloblenerho'     => ['Тернопільська обл.', :oe, 'Тернопільська область',     'https://www.toe.com.ua/'],
-  'Zakarpattiaoblenerho'  => ['Закарпатська обл.',  :oe, 'Закарпатська область',      'https://www.zakarpat.energy/'],
-  'Zaporizhzhiaoblenergo' => ['Запорізька обл.',    :oe, 'Запорізька область',        'https://www.zoe.com.ua/'],
-  'Zhytomyroblenergo'     => ['Житомирська обл.',   :oe, 'Житомирська область',       'https://www.ztoe.com.ua/unhooking-search.php'],
-  'kyiv'                  => ['Київ',               :bk, 'м. Київ',                   'https://kyiv.yasno.com.ua/schedule-turn-off-electricity'],
-  'kyiv-region'           => ['Київська обл.',      :bk, 'Київська область',          'https://www.dtek-krem.com.ua/ua/shutdowns'],
-  'dnipro'                => ['Дніпро та обл.',     :bk, 'Дніпропетровська область',  'https://www.dtek-dnem.com.ua/ua/shutdowns'],
-  'odesa'                 => ['Одеса та обл.',      :bk, 'Одеська область',           'https://www.dtek-oem.com.ua/ua/shutdowns']
+  # id => [назва, джерело графіків, область для тривог, сайт обленерго, слаг для alerts.energy]
+  'Cherkasyoblenergo'     => ['Черкаська обл.',    :oe, 'Черкаська область',         'https://www.cherkasyoblenergo.com/static/perelik-gpv', 'cherkaska-oblast'],
+  'Chernihivoblenergo'    => ['Чернігівська обл.', :oe, 'Чернігівська область',      'https://www.chernihiv.energy/',        'chernigivska-oblast'],
+  'Kharkivoblenerho'      => ['Харківська обл.',   :oe, 'Харківська область',        'https://www.hoe.com.ua/',              'kharkivska-oblast'],
+  'Khmelnytskoblenerho'   => ['Хмельницька обл.',  :oe, 'Хмельницька область',       'https://www.hoe.com.ua/',              'khmelnytska-oblast'],
+  'Lvivoblenerho'         => ['Львівська обл.',    :oe, 'Львівська область',         'https://loe.lviv.ua/',                 'lvivska-oblast'],
+  'Poltavaoblenergo'      => ['Полтавська обл.',   :oe, 'Полтавська область',        'https://www.poe.pl.ua/',               'poltavska-oblast'],
+  'Prykarpattiaoblenerho' => ['Івано-Франківська', :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/',                'ivano-frankivska-oblast'],
+  'Rivneoblenergo'        => ['Рівненська обл.',   :oe, 'Рівненська область',        'https://www.roe.vsei.ua/',             'rivnenska-oblast'],
+  'Ternopiloblenerho'     => ['Тернопільська обл.', :oe, 'Тернопільська область',    'https://www.toe.com.ua/',              'ternopilska-oblast'],
+  'Zakarpattiaoblenerho'  => ['Закарпатська обл.', :oe, 'Закарпатська область',      'https://www.zakarpat.energy/',         'zakarpatska-oblast'],
+  'Zaporizhzhiaoblenergo' => ['Запорізька обл.',   :oe, 'Запорізька область',        'https://www.zoe.com.ua/',              'zaporizka-oblast'],
+  'Zhytomyroblenergo'     => ['Житомирська обл.',  :oe, 'Житомирська область',       'https://www.ztoe.com.ua/unhooking-search.php', 'zhytomyrska-oblast'],
+  'kyiv'                  => ['Київ',              :bk, 'м. Київ',                   'https://kyiv.yasno.com.ua/schedule-turn-off-electricity', 'kyiv'],
+  'kyiv-region'           => ['Київська обл.',     :bk, 'Київська область',          'https://www.dtek-krem.com.ua/ua/shutdowns', 'kyivska-oblast'],
+  'dnipro'                => ['Дніпро та обл.',    :bk, 'Дніпропетровська область',  'https://www.dtek-dnem.com.ua/ua/shutdowns', 'dnipropetrovska-oblast'],
+  'odesa'                 => ['Одеса та обл.',     :bk, 'Одеська область',           'https://www.dtek-oem.com.ua/ua/shutdowns',  'odeska-oblast']
 }.freeze
 
 SRC = { oe: OE_SRC, bk: BK_SRC }.freeze
@@ -195,6 +199,57 @@ rescue StandardError
   File.exist?(path) ? read_cache(path)&.dig('breaking') : nil
 end
 
+# Графіки з alerts.energy. Повертає nil, якщо даних немає — тоді
+# працює запасне джерело.
+def fetch_shutdowns(slug)
+  return nil unless slug
+
+  FileUtils.mkdir_p(CACHE)
+  path = File.join(CACHE, "sd-#{slug}.json")
+
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
+    cached = read_cache(path)
+    return cached&.empty? ? nil : cached
+  end
+
+  body, etag = http_get(format(SHUTDOWNS, slug), read_etag(path))
+
+  if body.nil?
+    FileUtils.touch(path)
+    cached = read_cache(path)
+    return cached&.empty? ? nil : cached
+  end
+
+  parsed = JSON.parse(body)
+  raise 'unexpected schema' unless parsed.is_a?(Array)
+  raise 'bad rows' unless parsed.all? { |r| r.is_a?(Hash) && r['queue'].to_s.match?(/\A\d{1,3}\.\d{1,2}\z/) }
+
+  File.write(path, body)
+  write_etag(path, etag)
+  parsed.empty? ? nil : parsed
+rescue StandardError
+  cached = File.exist?(path) ? read_cache(path) : nil
+  cached&.empty? ? nil : cached
+end
+
+# Рядок потрібної черги у форматі, який розуміє решта коду.
+# У джерелі 1 — відключення, тож інвертуємо: у нас true означає «світло є».
+def schedule_from(rows, queue)
+  num = queue.sub('GPV', '')
+  row = rows.find { |r| r['queue'] == num && r['initiator'].to_s.include?('oblenergo') } ||
+        rows.find { |r| r['queue'] == num }
+  return nil unless row
+
+  hours = lambda do |key|
+    a = row[key]
+    a.is_a?(Array) && a.size == 24 ? a.map { |v| v.to_i.zero? } : nil
+  end
+
+  { today: hours.call('today'), tomorrow: hours.call('tomorrow'),
+    today_status: row['todayStatus'], tomorrow_status: row['tomorrowStatus'],
+    date: row['todayDate'], checked: row['todayCheckedAt'] }
+end
+
 def read_etag(path)
   File.exist?("#{path}.etag") ? File.read("#{path}.etag") : nil
 rescue StandardError
@@ -235,7 +290,67 @@ def valid_schedule?(doc)
   end
 end
 
+# Перетворює рядки alerts.energy у той самий формат, що й GitHub-джерела,
+# щоб решта коду не знала, звідки прийшли дані.
+def as_schedule(rows)
+  # На одну чергу буває кілька постачальників (обленерго і, скажімо,
+  # залізниця) з різними графіками. Беремо обленерго — він стосується
+  # переважної більшості споживачів.
+  rows = rows.group_by { |r| r['queue'] }.map do |_, same|
+    same.find { |r| r['initiator'].to_s.include?('oblenergo') } || same.first
+  end
+
+  days = {}
+  update = nil
+
+  %w[today tomorrow].each do |slot|
+    date = rows.map { |r| r["#{slot}Date"] }.compact.first
+    next unless date
+
+    ts = Date.parse(date).to_time.to_i
+    group = {}
+    rows.each do |r|
+      hrs = r[slot]
+      next unless hrs.is_a?(Array) && hrs.size == 24
+
+      maybe = r["#{slot}Possible"]
+      maybe = [] unless maybe.is_a?(Array)
+      group["GPV#{r['queue']}"] = (0..23).to_h do |i|
+        v = if hrs[i].to_i == 1 then 'no'
+            elsif maybe[i].to_i == 1 then 'maybe'
+            else 'yes'
+            end
+        [(i + 1).to_s, v]
+      end
+    end
+    # NoShutdowns — відключень немає, порожні години означають «світло весь день»
+    if group.empty? && rows.any? { |r| r["#{slot}Status"] == 'NoShutdowns' }
+      rows.each { |r| group["GPV#{r['queue']}"] = (1..24).to_h { |h| [h.to_s, 'yes'] } }
+    end
+    days[ts.to_s] = group unless group.empty?
+    update ||= rows.map { |r| r['todayCheckedAt'] }.compact.max
+  end
+
+  return nil if days.empty?
+
+  today_ts = rows.map { |r| r['todayDate'] }.compact.first
+  { 'lastUpdated' => update,
+    'fact' => { 'data' => days,
+                'update' => update,
+                'today' => today_ts ? Date.parse(today_ts).to_time.to_i : days.keys.min.to_i } }
+end
+
 def fetch_data(region)
+  # Спершу alerts.energy: свіжіше й з явними статусами
+  rows = fetch_shutdowns(REGIONS.dig(region, 4))
+  if rows && (built = as_schedule(rows)) && valid_schedule?(built)
+    return [built, :fresh]
+  end
+
+  fetch_from_github(region)
+end
+
+def fetch_from_github(region)
   FileUtils.mkdir_p(CACHE)
   path = File.join(CACHE, "#{region}.json")
 

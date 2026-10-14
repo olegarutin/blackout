@@ -31,7 +31,7 @@ module Pure
   end
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
-     siren_prefix].each do |name|
+     siren_prefix as_schedule].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}.*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -198,6 +198,9 @@ class TestIntegration < Minitest::Test
     @home = Dir.mktmpdir('blackout-test')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
+    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
   end
 
   def teardown
@@ -439,6 +442,9 @@ class TestEmergency < Minitest::Test
     @home = Dir.mktmpdir('blackout-emergency')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
+    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     day = Date.today
     ts = Time.new(day.year, day.month, day.day).to_i
     write('Cherkasyoblenergo',
@@ -507,6 +513,9 @@ class TestDaySelection < Minitest::Test
     @home = Dir.mktmpdir('blackout-day')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
+    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'alerts.json'), '{"states":{}}')
     File.write(File.join(@home, '.cache', 'blackout', 'energy.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'notice.json'), '{}')
@@ -546,6 +555,9 @@ class TestNotice < Minitest::Test
     @home = Dir.mktmpdir('blackout-notice')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
+    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
+    File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     d = Date.today
     ts = Time.new(d.year, d.month, d.day).to_i
     w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts })
@@ -584,5 +596,65 @@ class TestNotice < Minitest::Test
     line = run_plugin.lines.find { |l| l.include?('📰') }
     _title, params = line.split('|', 2)
     refute_includes params.to_s, 'bash='
+  end
+end
+
+class TestShutdownsSource < Minitest::Test
+  def rows(extra = [])
+    base = { 'initiator' => 'cherkaska_oblast_oblenergo', 'queue' => '1.1',
+             'today' => ([0] * 10 + [1, 1] + [0] * 12),
+             'todayPossible' => [0] * 24,
+             'tomorrow' => [], 'todayStatus' => 'ScheduleApplies',
+             'tomorrowStatus' => 'WaitingForSchedule',
+             'todayDate' => Date.today.to_s,
+             'todayCheckedAt' => Time.now.utc.iso8601 }
+    [base] + extra
+  end
+
+  def built(rs)
+    Pure.as_schedule(rs)
+  end
+
+  def test_одиниця_означає_відключення
+    d = built(rows)
+    ts = d['fact']['data'].keys.first
+    h = d['fact']['data'][ts]['GPV1.1']
+    assert_equal 'yes', h['1']   # година 0–1
+    assert_equal 'no', h['11']   # година 10–11
+    assert_equal 'no', h['12']
+    assert_equal 'yes', h['13']
+  end
+
+  def test_обирає_обленерго_а_не_залізницю
+    # На одну чергу буває кілька постачальників із різними графіками
+    uz = { 'initiator' => 'cherkaska_oblast_uz', 'queue' => '1.1',
+           'today' => ([0] * 15 + [1, 1] + [0] * 7), 'todayPossible' => [0] * 24,
+           'todayStatus' => 'ScheduleApplies', 'todayDate' => Date.today.to_s }
+    d = built(rows([uz]))
+    h = d['fact']['data'].values.first['GPV1.1']
+    assert_equal 'no', h['11'], 'має бути графік обленерго'
+    assert_equal 'yes', h['16'], 'не має бути графік залізниці'
+  end
+
+  def test_possible_стає_maybe
+    rs = rows
+    rs[0]['todayPossible'] = [0] * 5 + [1] + [0] * 18
+    h = built(rs)['fact']['data'].values.first['GPV1.1']
+    assert_equal 'maybe', h['6']
+  end
+
+  def test_noshutdowns_це_світло_весь_день
+    rs = [{ 'initiator' => 'x_oblenergo', 'queue' => '1.1', 'today' => [],
+            'todayStatus' => 'NoShutdowns', 'todayDate' => Date.today.to_s }]
+    h = built(rs)['fact']['data'].values.first['GPV1.1']
+    assert_equal 24, h.values.count('yes')
+  end
+
+  def test_порожні_рядки_дають_nil
+    assert_nil built([])
+  end
+
+  def test_результат_проходить_валідацію
+    assert Pure.valid_schedule?(built(rows))
   end
 end
