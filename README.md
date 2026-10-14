@@ -30,7 +30,7 @@
 
 ```sh
 brew install --cask swiftbar
-git clone https://github.com/USERNAME/blackout.git ~/blackout
+git clone https://github.com/olegarutin/blackout.git ~/blackout
 chmod +x ~/blackout/plugin/blackout.1m.rb
 open -a SwiftBar
 ```
