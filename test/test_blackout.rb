@@ -15,6 +15,11 @@
 Encoding.default_external = Encoding::UTF_8
 Encoding.default_internal = Encoding::UTF_8
 
+# Фікстури — це дані джерела, а ключ дня в них завжди київська північ.
+# Плагін теж рахує за Києвом, тож тест мусить будувати мітки так само,
+# інакше на раннері в UTC фікстура й плагін говорять про різні доби.
+ENV['TZ'] = 'Europe/Kyiv'
+
 require 'minitest/autorun'
 require 'date'
 require 'time'
