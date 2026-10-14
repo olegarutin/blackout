@@ -15,6 +15,9 @@ require 'digest'
 require 'date'
 require 'time'
 
+# Шлях до себе підставляється в bash= пунктів меню. Якщо застосунок
+# лежить у теці з пробілом, без лапок решта шляху стане окремими
+# параметрами SwiftBar і меню зламається.
 SELF = File.expand_path(__FILE__)
 
 OE_SRC = 'https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data'
@@ -426,6 +429,14 @@ def safe(str)
   str.to_s.delete('|').strip
 end
 
+# Значення параметра SwiftBar (href=, bash= тощо) не може містити пробілів —
+# інакше решта рядка стає окремими параметрами. Для даних із мережі
+# повертаємо nil, якщо вони не схожі на безпечний фрагмент URL.
+def url_part(str)
+  v = str.to_s
+  v.match?(%r{\A[\w.~-]{1,120}\z}) ? v : nil
+end
+
 def fmt(minutes)
   format('%d:%02d', minutes / 60, minutes % 60)
 end
@@ -729,8 +740,10 @@ begin
     puts "📰 #{safe(news['title'])} | size=12 color=gray"
     excerpt = safe(news['excerpt']).to_s
     puts "#{excerpt[0, 150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90" unless excerpt.empty?
-    if news['slug'] && news['dateSlug']
-      puts "Читати | size=11 color=gray href=https://alerts.energy/news/#{news['dateSlug']}/#{news['slug']}"
+    slug = url_part(news['slug'])
+    date_slug = url_part(news['dateSlug'])
+    if slug && date_slug
+      puts "Читати | size=11 color=gray href=https://alerts.energy/news/#{date_slug}/#{slug}"
     end
   end
 
@@ -784,21 +797,21 @@ begin
              end
     groups.sort_by { |g| g[3..].split('.').map(&:to_i) }.each do |k|
       sel = (id == REGION && k == QUEUE) ? '✓ ' : ''
-      puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=#{SELF} " \
+      puts "------#{sel}черга #{k.sub('GPV', '')} | size=11 bash=\"#{SELF}\" " \
            "terminal=false refresh=true param1=--set param2=#{id} param3=#{k}"
     end
   end
 
   puts "--Не знаю свою чергу | size=11#{region_url ? " href=#{region_url}" : ''}"
 
-  puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=#{SELF} " \
+  puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
   puts '--Сповіщення | size=11'
-  puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=#{SELF} terminal=false " \
+  puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=\"#{SELF}\" terminal=false " \
        "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
   puts '----Попереджати за | size=11'
   [5, 10, 15, 30, 60].each do |m|
-    puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=#{SELF} " \
+    puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=\"#{SELF}\" " \
          "terminal=false refresh=true param1=--warn param2=#{m}"
   end
 

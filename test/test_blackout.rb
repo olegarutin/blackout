@@ -658,3 +658,65 @@ class TestShutdownsSource < Minitest::Test
     assert Pure.valid_schedule?(built(rows))
   end
 end
+
+class TestParamInjection < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-param')
+    c = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(c)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    d = Date.today
+    ts = Time.new(d.year, d.month, d.day).to_i
+    File.write(File.join(c, 'sd-cherkaska-oblast.json'), '[]')
+    File.write(File.join(c, 'Cherkasyoblenergo.json'), JSON.generate(
+                 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts }))
+    File.write(File.join(c, 'alerts.json'), '{"states":{}}')
+    File.write(File.join(c, 'energy.json'), '[]')
+    @cache = c
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  # Параметри SwiftBar розділяються ПРОБІЛАМИ, тож safe() тут не досить:
+  # вона вирізає лише '|'. Значення з мережі мають або проходити
+  # сувору перевірку, або не виводитись узагалі.
+  def test_slug_новини_не_може_підсунути_параметр
+    File.write(File.join(@cache, 'notice.json'), JSON.generate(
+                 'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
+                                 'slug' => 'x terminal=true bash=/bin/sh param1=-c' }))
+    out = run_plugin
+    refute_match(%r{bash=/bin/sh}, out, 'slug із пробілами не має ставати параметром')
+    refute_match(/Читати/, out, 'посилання з підозрілим slug не має виводитись')
+    assert_match(/📰/, out, 'сама новина має лишитись')
+  end
+
+  def test_нормальний_slug_дає_посилання
+    File.write(File.join(@cache, 'notice.json'), JSON.generate(
+                 'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
+                                 'slug' => 'sytuatsiia-v-energosystemi' }))
+    assert_match(%r{href=https://alerts.energy/news/2026-10-14/sytuatsiia-v-energosystemi},
+                 run_plugin)
+  end
+
+  def test_dateslug_теж_перевіряється
+    File.write(File.join(@cache, 'notice.json'), JSON.generate(
+                 'breaking' => { 'title' => 'Н', 'excerpt' => 'т', 'dateSlug' => 'a bash=/bin/sh',
+                                 'slug' => 'ok-slug' }))
+    refute_match(%r{bash=/bin/sh}, run_plugin)
+  end
+
+  def test_шлях_зі_пробілами_береться_в_лапки
+    # Якщо застосунок лежить у теці з пробілом, без лапок решта шляху
+    # стане окремими параметрами SwiftBar
+    line = run_plugin.lines.find { |l| l.include?('param1=--set') }
+    refute_nil line
+    assert_match(/bash="[^"]+"/, line, 'шлях має бути в лапках')
+  end
+end
