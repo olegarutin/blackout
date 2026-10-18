@@ -18,6 +18,7 @@ require 'uri'
 require 'fileutils'
 require 'digest'
 require 'date'
+require 'time'
 
 # Без змінних локалі Ruby читає файли як US-ASCII, і кирилиця ламає розбір.
 # Лише default_external: default_internal змусив би Ruby перекодовувати
@@ -30,7 +31,6 @@ Encoding.default_external = Encoding::UTF_8
 def utf8(str)
   str.nil? ? nil : str.dup.force_encoding(Encoding::UTF_8)
 end
-require 'time'
 
 # Шлях до себе підставляється в bash= пунктів меню. Якщо застосунок
 # лежить у теці з пробілом, без лапок решта шляху стане окремими
@@ -443,7 +443,9 @@ def as_schedule(rows)
       rows.each { |r| group["GPV#{r['queue']}"] = (1..24).to_h { |h| [h.to_s, 'yes'] } }
     end
     days[ts.to_s] = group unless group.empty?
-    update ||= rows.map { |r| r['todayCheckedAt'] }.compact.max
+    # updated — коли графік опублікували; todayCheckedAt — лише коли ми
+    # його перепитали. Друге завжди свіже й тому нічого не каже.
+    update ||= rows.map { |r| r['updated'] }.compact.max
   end
 
   return nil if days.empty?
@@ -455,14 +457,36 @@ def as_schedule(rows)
                 'today' => today_ts ? Date.parse(today_ts).to_time.to_i : days.keys.min.to_i } }
 end
 
-def fetch_data(region)
-  # Спершу alerts.energy: свіжіше й з явними статусами
-  rows = fetch_shutdowns(REGIONS.dig(region, 4))
-  if rows && (built = as_schedule(rows)) && valid_schedule?(built)
-    return [built, :fresh]
-  end
+# Час публікації графіка. alerts.energy віддає ISO, GitHub-джерела —
+# «18.10.2026 10:01» київським часом.
+def published_at(doc)
+  v = doc && (doc.dig('fact', 'update') || doc['lastUpdated'])
+  return nil unless v
 
-  fetch_from_github(region)
+  v.to_s.match?(/\A\d{2}\.\d{2}\.\d{4}/) ? Time.strptime(v.to_s, '%d.%m.%Y %H:%M') : Time.parse(v.to_s)
+rescue StandardError
+  nil
+end
+
+# Джерела розходяться, і не завжди бреше запасне. 18 жовтня обленерго
+# переписало графік о 10:01, GitHub це мав, а alerts.energy ще віддавав
+# учорашню редакцію (updated 17.10 20:15) — з виглядом свіжих даних,
+# бо перепитане щойно. Застосунок казав «світло є», коли світла не було.
+# Тому дивимось обидва й беремо те, що опубліковане пізніше: застарілі
+# на місяці GitHub-файли при цьому програють самі собою.
+def fetch_data(region)
+  rows = fetch_shutdowns(REGIONS.dig(region, 4))
+  built = rows && as_schedule(rows)
+  built = nil unless built && valid_schedule?(built)
+
+  github, status = fetch_from_github(region)
+
+  return [built, :fresh] if github.nil?
+  return [github, status] if built.nil?
+
+  mine = published_at(built)
+  theirs = published_at(github)
+  theirs && (mine.nil? || theirs > mine) ? [github, status] : [built, :fresh]
 end
 
 def fetch_from_github(region)

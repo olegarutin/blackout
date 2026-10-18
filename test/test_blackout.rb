@@ -43,7 +43,8 @@ module Pure
 
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
      siren_prefix as_schedule fmt_updated read_etag read_cache
-     atomic_write touch_cache ensure_dir read_schedule valid_rows?].each do |name|
+     atomic_write touch_cache ensure_dir read_schedule valid_rows?
+     published_at].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -861,6 +862,93 @@ end
 # давали протилежну відповідь: у Києві «світла немає», у Лісабоні «світло є».
 # Порожній графік — це «не знаємо», а не «світла вдосталь». Раніше
 # Одеса з нульовими даними малювала зелену 💡.
+# 18 жовтня обленерго переписало графік о 10:01, GitHub це мав, а
+# alerts.energy ще віддавав учорашню редакцію з виглядом свіжих даних.
+# Застосунок показував «світло є», коли світла вже не було.
+class TestFreshestWins < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-fresh')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    @day = Date.today
+    @ts = Time.new(@day.year, @day.month, @day.day).to_i
+    w('alerts', 'states' => {})
+    w('energy', [])
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  # alerts.energy: учорашня редакція, світло цілий день
+  def seed_primary(published)
+    w('sd-cherkaska-oblast',
+      [{ 'queue' => '1.1', 'initiator' => 'cherkaska_oblast_oblenergo',
+         'updated' => published, 'todayDate' => @day.strftime('%Y-%m-%d'),
+         'todayStatus' => 'ScheduleApplies', 'today' => Array.new(24, 0),
+         'todayPossible' => Array.new(24, 0) }])
+  end
+
+  # GitHub: нова редакція, вимкнення з 10 до 12
+  def seed_github(published)
+    hours = (1..24).to_h { |h| [h.to_s, [11, 12].include?(h) ? 'no' : 'yes'] }
+    w('Cherkasyoblenergo',
+      'fact' => { 'data' => { @ts.to_s => { 'GPV1.1' => hours } },
+                  'update' => published, 'today' => @ts })
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_новіша_редакція_перемагає_основне_джерело
+    seed_primary((Time.now - (14 * 3600)).utc.iso8601)
+    seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))
+    out = run_plugin
+
+    assert_match(/10:00 – 12:00/, out, 'узято стару редакцію без вимкнення 10–12')
+  end
+
+  def test_застарілий_github_не_перебиває_свіже_основне
+    seed_primary(Time.now.utc.iso8601)
+    seed_github('01.07.2026 09:00')
+    out = run_plugin
+
+    refute_match(/10:00 – 12:00/, out, 'липневий файл переміг сьогоднішні дані')
+  end
+
+  def test_оновлено_це_час_публікації_а_не_опитування
+    seed_primary((Time.now - (14 * 3600)).utc.iso8601)
+    seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))
+
+    assert_match(/Оновлено: #{Time.now.strftime('%d\\.%m\\.%Y')}/, run_plugin)
+  end
+end
+
+class TestPublishedAt < Minitest::Test
+  def test_обидва_формати_розбираються
+    iso = Pure.published_at('lastUpdated' => '2026-10-17T17:15:00.000Z')
+    txt = Pure.published_at('fact' => { 'update' => '18.10.2026 10:01' })
+
+    refute_nil iso
+    refute_nil txt
+    assert_operator txt, :>, iso, 'ранкова редакція має бути новішою за вечірню'
+  end
+
+  def test_сміття_не_ламає
+    assert_nil Pure.published_at(nil)
+    assert_nil Pure.published_at({})
+    assert_nil Pure.published_at('fact' => { 'update' => 'хтозна' })
+  end
+end
+
 class TestEmptySchedule < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-empty')
