@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 # Restriction level for our oblast, or nil when there is no data.
 def fetch_energy
   ensure_dir(CACHE)

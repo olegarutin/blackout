@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 OE_SRC = 'https://raw.githubusercontent.com/yaroslav2901/OE_OUTAGE_DATA/main/data'
 BK_SRC = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data'
 ALERTS = 'https://vadimklimenko.com/map/statuses.json'

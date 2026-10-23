@@ -1,14 +1,17 @@
+# frozen_string_literal: true
+
 # Without a locale, ENV and ARGV arrive as ASCII-8BIT and matching them
 # against a UTF-8 regex raises. Tag them explicitly.
 def utf8(str)
   str.nil? ? nil : str.dup.force_encoding(Encoding::UTF_8)
 end
 
-# The host splits an item's text from its parameters on '|', so anything
-# from the network has that character removed and its length capped —
-# a 100 KB headline would otherwise stretch the menu across the screen.
+# The host splits an item's text from its parameters on '|' and one menu
+# item from the next on a newline, so anything from the network loses
+# both. Length is capped as well: a 100 KB headline would otherwise
+# stretch the menu across the screen.
 def safe(str, limit = 200)
-  v = str.to_s.delete('|').strip
+  v = str.to_s.delete('|').gsub(/[[:space:]]+/, ' ').strip
   v.length > limit ? "#{v[0, limit]}…" : v
 end
 

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 REGIONS = {
   # id => [menu label, mirror, oblast, utility site, primary-source slug]
   'Prykarpattiaoblenerho'    => ['Івано-Франківська', :oe, 'Івано-Франківська область', 'https://www.oe.if.ua/', 'ivano-frankivska-oblast'],

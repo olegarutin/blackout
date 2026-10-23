@@ -107,24 +107,6 @@ rescue StandardError
   nil
 end
 
-# One queue's row in the shape the rest of the code expects. In the
-# source 1 means an outage, so invert it: here true means power is on.
-def schedule_from(rows, queue)
-  num = queue.sub('GPV', '')
-  row = rows.find { |r| r['queue'] == num && r['initiator'].to_s.include?('oblenergo') } ||
-        rows.find { |r| r['queue'] == num }
-  return nil unless row
-
-  hours = lambda do |key|
-    a = row[key]
-    a.is_a?(Array) && a.size == 24 ? a.map { |v| v.to_i.zero? } : nil
-  end
-
-  { today: hours.call('today'), tomorrow: hours.call('tomorrow'),
-    today_status: row['todayStatus'], tomorrow_status: row['tomorrowStatus'],
-    date: row['todayDate'], checked: row['todayCheckedAt'] }
-end
-
 # Hour N in the source is the interval [N-1, N)
 def hours_for(data, queue, day_key)
   raw = data.dig('fact', 'data', day_key, queue)

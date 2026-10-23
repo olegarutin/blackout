@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 def fetch_alerts
   ensure_dir(CACHE)
   path = File.join(CACHE, 'alerts.json')

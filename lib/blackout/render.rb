@@ -53,15 +53,9 @@ def render
   data, status = fetch_data(REGION)
 
   if data.nil?
-    # A missing schedule is not necessarily a failure. The restriction
-    # level usually explains the reason better than we could.
-    label = area && safe(area['label'])
-    puts(emergency ? "#{siren_prefix(alert)}🚨" : "#{siren_prefix(alert)}❔")
-    puts '---'
-    puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
-    puts "#{label || 'Графіка немає'} | color=#{emergency ? 'red' : 'orange'} size=14"
-    puts 'Оператор не публікує графіків для цієї області | size=11 color=gray' unless emergency
-    render_alert(alert)
+    no_schedule(alert, emergency, area,
+                'Графіка немає',
+                'Оператор не публікує графіків для цієї області')
     exit
   end
 
@@ -74,16 +68,10 @@ def render
   # green bulb — "power on" — which was the same lie as the timezone
   # one: a region with zero data and a cheerful light. No schedule is ❔.
   if day_keys.empty?
-    label = area && safe(area['label'])
-    puts(emergency ? "#{siren_prefix(alert)}🚨" : "#{siren_prefix(alert)}❔")
-    puts '---'
-    puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
-    puts "#{label || 'Актуального графіка немає'} | color=#{emergency ? 'red' : 'orange'} size=14"
-    unless emergency
-      puts 'Джерело віддало порожній графік — відключення можливі | size=11 color=gray'
-    end
-    puts "Оновлено: #{fmt_updated(data['lastUpdated'])} | size=11 color=gray" if data['lastUpdated']
-    render_alert(alert)
+    no_schedule(alert, emergency, area,
+                'Актуального графіка немає',
+                'Джерело віддало порожній графік — відключення можливі',
+                data['lastUpdated'])
     exit
   end
 
@@ -115,6 +103,7 @@ def render
     puts "#{emergency} | color=red size=14"
     puts 'Графіка на цю чергу немає — відключають поза ним | size=11 color=gray'
     render_alert(alert)
+    settings_menu((raw_days&.dig(today_key) || {}).keys)
     exit
   end
 
@@ -123,6 +112,9 @@ def render
     puts '---'
     puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
     puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
+    puts 'Обери свою нижче, у Налаштуваннях | size=11 color=gray'
+    render_alert(alert)
+    settings_menu((raw_days&.dig(today_key) || {}).keys)
     exit
   end
 
@@ -271,43 +263,7 @@ def render
   mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
   puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
 
-  puts 'Налаштування | size=11 color=gray'
-
-  puts "--Область: #{region_name} | size=11"
-  region_picker('----')
-
-  puts "--Черга: #{QUEUE.sub('GPV', '')} | size=11"
-  queue_picker('----', (raw_days&.dig(today_key) || {}).keys)
-  site = REGIONS.dig(REGION, 3)
-  puts "--Не знаю свою чергу | size=11#{site ? " href=#{site}" : ''}"
-
-  puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
-       "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
-
-  if ALERTS_ON && (districts = alert_districts(REGIONS.dig(REGION, 2)))
-    puts '--Район для тривог | size=11'
-    puts "----#{DISTRICT ? '' : '✓ '}Уся область | size=11 bash=\"#{SELF}\" " \
-         'terminal=false refresh=true param1=--district param2=""'
-    districts.first(40).each do |d|
-      next unless d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
-
-      puts "----#{DISTRICT == d ? '✓ ' : ''}#{d} | size=11 bash=\"#{SELF}\" " \
-           "terminal=false refresh=true param1=--district param2=\"#{d}\""
-    end
-  end
-  puts '--Сповіщення | size=11'
-  puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=\"#{SELF}\" terminal=false " \
-       "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
-  puts '----Попереджати за | size=11'
-  [5, 10, 15, 30, 60].each do |m|
-    puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=\"#{SELF}\" " \
-         "terminal=false refresh=true param1=--warn param2=#{m}"
-  end
-
-  puts "Оновити зараз | refresh=true size=11"
-  puts '---'
-  puts 'Дані з відкритих джерел, можливі неточності | size=10 color=gray'
-  puts 'Джерела даних | size=10 color=gray href=https://alerts.energy/'
+  settings_menu((raw_days&.dig(today_key) || {}).keys)
 rescue Errno::EPIPE
   # The reader closed the pipe (`| head`, say) — not an error
   exit 0

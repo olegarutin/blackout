@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 CACHE  = File.join(Dir.home, '.cache', 'blackout')
 CONFIG = File.join(Dir.home, '.config', 'blackout.json')
 STATE  = File.join(CACHE, 'state.json')
