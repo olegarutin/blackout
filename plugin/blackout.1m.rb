@@ -629,20 +629,27 @@ end
 
 # Той самий перелік потрібен двічі: на екрані першого запуску без відступу
 # і всередині «Налаштувань» з відступом.
-def region_picker(indent, known_groups)
+# Перелік областей. Черги тут НЕ розгортаються: обрати можна лише одну
+# область, а двадцять шість розгорнутих списків давали 364 рядки меню —
+# більше, ніж усе інше разом.
+def region_picker(indent)
   REGIONS.each_key do |id|
     here = CONFIGURED && id == REGION
-    puts "#{indent}#{here ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11"
-    site = REGIONS.dig(id, 3)
-    puts "#{indent}--Не знаю свою чергу | size=11#{site ? " href=#{site}" : ''}"
-    groups = here && known_groups ? known_groups : DEFAULT_GROUPS
-    # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
-    groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
-          .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
-      puts "#{indent}--#{here && k == QUEUE ? '✓ ' : ''}черга #{k.sub('GPV', '')} | " \
-           "size=11 bash=\"#{SELF}\" terminal=false refresh=true " \
-           "param1=--set param2=#{id} param3=#{k}"
-    end
+    puts "#{indent}#{here ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11 " \
+         "bash=\"#{SELF}\" terminal=false refresh=true " \
+         "param1=--set param2=#{id} param3=#{QUEUE}"
+  end
+end
+
+# Черги — лише своєї області, із реальних даних, якщо вони є
+def queue_picker(indent, known_groups)
+  groups = known_groups && !known_groups.empty? ? known_groups : DEFAULT_GROUPS
+  # Більше сотні черг не буває навіть у Києві — захист від роздутих даних
+  groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
+        .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
+    puts "#{indent}#{k == QUEUE ? '✓ ' : ''}черга #{k.sub('GPV', '')} | " \
+         "size=11 bash=\"#{SELF}\" terminal=false refresh=true " \
+         "param1=--set param2=#{REGION} param3=#{k}"
   end
 end
 
@@ -715,11 +722,11 @@ begin
     puts '🔌'
     puts '---'
     puts 'Регіон не вибрано | size=13'
-    puts 'Обери область і чергу — далі застосунок працює сам | size=11 color=gray'
+    puts 'Обери свою область — чергу вкажеш далі | size=11 color=gray'
     puts '---'
-    region_picker('', nil)
+    region_picker('')
     puts '---'
-    puts 'Не знаєш чергу? У кожній області є посилання на сайт обленерго | size=10 color=gray'
+    puts 'Після вибору області чергу обереш у Налаштуваннях | size=10 color=gray'
     exit
   end
 
@@ -924,7 +931,6 @@ begin
     end
   end
 
-  puts '---'
   render_alert(alert)
 
   if (news = fetch_notice)
@@ -939,6 +945,7 @@ begin
     end
   end
 
+  puts '---'
   label = if UNKNOWN then "Останній графік · #{day_date.strftime('%d.%m')}"
           elsif STALE then day_date.strftime('%d.%m.%Y')
           else 'Сьогодні'
@@ -979,8 +986,13 @@ begin
 
   puts 'Налаштування | size=11 color=gray'
 
-  puts '--Регіон і черга | size=11'
-  region_picker('----', (raw_days&.dig(today_key) || {}).keys)
+  puts "--Область: #{region_name} | size=11"
+  region_picker('----')
+
+  puts "--Черга: #{QUEUE.sub('GPV', '')} | size=11"
+  queue_picker('----', (raw_days&.dig(today_key) || {}).keys)
+  site = REGIONS.dig(REGION, 3)
+  puts "--Не знаю свою чергу | size=11#{site ? " href=#{site}" : ''}"
 
   puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"

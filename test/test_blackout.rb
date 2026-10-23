@@ -1064,19 +1064,22 @@ class TestFirstRun < Minitest::Test
     out = run_plugin
     assert_empty Dir.children(File.join(@home, '.cache', 'blackout')),
                  'на екрані вибору запитів бути не повинно'
-    assert_match(/черга 1\.1/, out)
+    assert_match(/Черкаська обл\./, out)
   end
 
   def test_нічого_не_позначено_галочкою
     refute_match(/✓/, run_plugin, 'до вибору галочки стояти не має')
   end
 
-  def test_кожна_область_має_посилання_на_обленерго
+  # 26 областей × 12 черг давали 364 рядки меню. Черги переїхали
+  # в Налаштування, де показується лише своя область.
+  def test_екран_вибору_це_лише_перелік_областей
     out = run_plugin
-    regions = out.lines.count { |l| l.chomp.match?(/\A[^-].* \| size=11\z/) }
-    links = out.lines.count { |l| l.start_with?('--Не знаю свою чергу') }
-    assert_operator regions, :>=, 26
-    assert_equal regions, links
+    clickable = out.lines.count { |l| l.include?('param1=--set') }
+
+    assert_operator clickable, :>=, 26
+    refute_match(/черга \d/, out, 'черги на цьому екрані зайві')
+    assert_operator out.lines.size, :<, 40, 'екран вибору має лишатись коротким'
   end
 
   def test_після_вибору_показує_графік
