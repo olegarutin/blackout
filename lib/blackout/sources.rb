@@ -17,4 +17,3 @@ TTL_NEWS = 600 # новини не міняються щохвилини
 # Alerts matter sooner, so they are checked every minute.
 TTL_DATA  = 170
 TTL_ALERT = 55
-

@@ -54,7 +54,7 @@ module Pure
     raise "не знайдено метод #{name}" unless body
 
     module_eval(body)
-    module_function name.to_sym
+    module_eval { module_function name.to_sym }
   end
 end
 
@@ -438,7 +438,7 @@ class TestIntegration < Minitest::Test
       next unless params
 
       assert_operator params.scan(/(?:\A|\s)bash=/).size, :<=, 1,
-                       "два bash= в одному пункті: #{line}"
+                      "два bash= в одному пункті: #{line}"
     end
   end
 
@@ -604,7 +604,9 @@ class TestNotice < Minitest::Test
     File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     d = Date.today
     ts = Time.new(d.year, d.month, d.day).to_i
-    w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts })
+    w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h do |i|
+      [i.to_s, 'yes']
+    end } }, 'today' => ts })
     w('alerts', 'states' => {})
     w('energy', [])
   end
@@ -655,8 +657,8 @@ class TestShutdownsSource < Minitest::Test
     [base] + extra
   end
 
-  def built(rs)
-    Pure.as_schedule(rs)
+  def built(rows)
+    Pure.as_schedule(rows)
   end
 
   def test_one_means_an_outage
@@ -713,7 +715,10 @@ class TestParamInjection < Minitest::Test
     ts = Time.new(d.year, d.month, d.day).to_i
     File.write(File.join(c, 'sd-cherkaska-oblast.json'), '[]')
     File.write(File.join(c, 'Cherkasyoblenergo.json'), JSON.generate(
-                 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts }))
+                                                         'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h do |i|
+                                                           [i.to_s, 'yes']
+                                                         end } }, 'today' => ts }
+                                                       ))
     File.write(File.join(c, 'alerts.json'), '{"states":{}}')
     File.write(File.join(c, 'energy.json'), '[]')
     @cache = c
@@ -733,8 +738,9 @@ class TestParamInjection < Minitest::Test
   # check or is not printed at all.
   def test_a_notice_slug_cannot_inject_a_parameter
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                 'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
-                                 'slug' => 'x terminal=true bash=/bin/sh param1=-c' }))
+                                                   'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
+                                                                   'slug' => 'x terminal=true bash=/bin/sh param1=-c' }
+                                                 ))
     out = run_plugin
     refute_match(%r{bash=/bin/sh}, out, 'slug із пробілами не має ставати параметром')
     refute_match(/Читати/, out, 'посилання з підозрілим slug не має виводитись')
@@ -743,16 +749,18 @@ class TestParamInjection < Minitest::Test
 
   def test_an_ordinary_slug_yields_a_link
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                 'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
-                                 'slug' => 'sytuatsiia-v-energosystemi' }))
+                                                   'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
+                                                                   'slug' => 'sytuatsiia-v-energosystemi' }
+                                                 ))
     assert_match(%r{href=https://alerts.energy/news/2026-10-14/sytuatsiia-v-energosystemi},
                  run_plugin)
   end
 
   def test_the_date_slug_is_checked_too
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                 'breaking' => { 'title' => 'Н', 'excerpt' => 'т', 'dateSlug' => 'a bash=/bin/sh',
-                                 'slug' => 'ok-slug' }))
+                                                   'breaking' => { 'title' => 'Н', 'excerpt' => 'т', 'dateSlug' => 'a bash=/bin/sh',
+                                                                   'slug' => 'ok-slug' }
+                                                 ))
     refute_match(%r{bash=/bin/sh}, run_plugin)
   end
 
@@ -1239,7 +1247,9 @@ class TestDistrict < Minitest::Test
     ts = Time.new(d.year, d.month, d.day).to_i
     w('sd-cherkaska-oblast', [])
     w('Cherkasyoblenergo',
-      'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } }, 'today' => ts })
+      'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => (1..24).to_h do |i|
+        [i.to_s, 'yes']
+      end } }, 'today' => ts })
     w('energy', [])
     w('notice', {})
   end
@@ -1259,8 +1269,8 @@ class TestDistrict < Minitest::Test
             'enabled_at' => Time.now.utc.iso8601 }]
     end
     w('alerts', 'states' => { 'Черкаська область' => {
-         'enabled' => false, 'alert_level' => nil, 'districts' => districts
-       } })
+        'enabled' => false, 'alert_level' => nil, 'districts' => districts
+      } })
   end
 
   def run_plugin(env = {})
@@ -1293,9 +1303,9 @@ class TestDistrict < Minitest::Test
   def test_an_oblast_wide_alert_applies_to_everyone
     # An oblast-wide announcement matters even with a district chosen
     w('alerts', 'states' => { 'Черкаська область' => {
-         'enabled' => true, 'alert_level' => 'red',
-         'enabled_at' => Time.now.utc.iso8601, 'districts' => {}
-       } })
+        'enabled' => true, 'alert_level' => 'red',
+        'enabled_at' => Time.now.utc.iso8601, 'districts' => {}
+      } })
     out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
     assert_match(/ракетна загроза/, out)
     assert_match(/Уся область/, out)
@@ -1360,8 +1370,8 @@ class TestOversizedData < Minitest::Test
       'fact' => { 'data' => { @ts.to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'yes'] } } },
                   'today' => @ts })
     w('alerts', 'states' => { 'Черкаська область' => {
-         'enabled' => false, 'alert_level' => 'red', 'districts' => districts
-       } })
+        'enabled' => false, 'alert_level' => 'red', 'districts' => districts
+      } })
     out = run_plugin
     line = out.lines.find { |l| l.start_with?('Райони:') }
     refute_nil line

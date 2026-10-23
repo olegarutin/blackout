@@ -75,7 +75,7 @@ rescue StandardError
   {}
 end
 
-def save_state(st)
+def save_state(state)
   ensure_dir(CACHE)
-  atomic_write(STATE, JSON.generate(st))
+  atomic_write(STATE, JSON.generate(state))
 end

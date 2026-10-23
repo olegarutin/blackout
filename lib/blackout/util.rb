@@ -3,7 +3,7 @@
 # Without a locale, ENV and ARGV arrive as ASCII-8BIT and matching them
 # against a UTF-8 regex raises. Tag them explicitly.
 def utf8(str)
-  str.nil? ? nil : str.dup.force_encoding(Encoding::UTF_8)
+  str&.dup&.force_encoding(Encoding::UTF_8)
 end
 
 # The host splits an item's text from its parameters on '|' and one menu
@@ -20,7 +20,7 @@ end
 # that does not look like a safe URL fragment is dropped.
 def url_part(str)
   v = str.to_s
-  v.match?(%r{\A[\w.~-]{1,120}\z}) ? v : nil
+  v.match?(/\A[\w.~-]{1,120}\z/) ? v : nil
 end
 
 # Sources differ: the primary one sends ISO in UTC, the mirrors send an

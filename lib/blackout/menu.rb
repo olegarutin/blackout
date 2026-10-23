@@ -7,7 +7,7 @@
 def region_picker(indent)
   REGIONS.each_key do |id|
     here = CONFIGURED && id == REGION
-    puts "#{indent}#{here ? '✓ ' : ''}#{REGIONS.dig(id, 0)} | size=11 " \
+    puts "#{indent}#{'✓ ' if here}#{REGIONS.dig(id, 0)} | size=11 " \
          "bash=\"#{SELF}\" terminal=false refresh=true " \
          "param1=--set param2=#{id} param3=#{QUEUE}"
   end
@@ -17,9 +17,9 @@ end
 def queue_picker(indent, known_groups)
   groups = known_groups && !known_groups.empty? ? known_groups : DEFAULT_GROUPS
   # Even Kyiv has fewer than a hundred queues; this caps bloated data
-  groups.select { |g| g.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) }
+  groups.grep(/\AGPV\d{1,3}\.\d{1,2}\z/)
         .sort_by { |g| g[3..].split('.').map(&:to_i) }.first(100).each do |k|
-    puts "#{indent}#{k == QUEUE ? '✓ ' : ''}черга #{k.sub('GPV', '')} | " \
+    puts "#{indent}#{'✓ ' if k == QUEUE}черга #{k.sub('GPV', '')} | " \
          "size=11 bash=\"#{SELF}\" terminal=false refresh=true " \
          "param1=--set param2=#{REGION} param3=#{k}"
   end
@@ -32,7 +32,8 @@ def notify(title, message)
     str.to_s.gsub('\\', '\\\\\\\\').gsub('"', '\\\\"').delete("\n\r")
   end
   system('osascript', '-e',
-         %(display notification "#{esc.call(message)}" with title "#{esc.call(title)}" sound name "Submarine"))
+         %(display notification "#{esc.call(message)}" ) +
+         %(with title "#{esc.call(title)}" sound name "Submarine"))
 end
 
 # The settings menu. Printed on EVERY screen, including the ones that
@@ -47,28 +48,28 @@ def settings_menu(known_groups = nil)
   puts "--Черга: #{QUEUE.sub('GPV', '')} | size=11"
   queue_picker('----', known_groups)
   site = REGIONS.dig(REGION, 3)
-  puts "--Не знаю свою чергу | size=11#{site ? " href=#{site}" : ''}"
+  puts "--Не знаю свою чергу | size=11#{" href=#{site}" if site}"
 
-  puts "--#{ALERTS_ON ? '✓ ' : ''}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
+  puts "--#{'✓ ' if ALERTS_ON}Показувати повітряну тривогу | size=11 bash=\"#{SELF}\" " \
        "terminal=false refresh=true param1=--alerts param2=#{ALERTS_ON ? 'off' : 'on'}"
 
   if ALERTS_ON && (districts = alert_districts(REGIONS.dig(REGION, 2)))
     puts '--Район для тривог | size=11'
-    puts "----#{DISTRICT ? '' : '✓ '}Уся область | size=11 bash=\"#{SELF}\" " \
+    puts "----#{'✓ ' unless DISTRICT}Уся область | size=11 bash=\"#{SELF}\" " \
          'terminal=false refresh=true param1=--district param2=""'
     districts.first(40).each do |d|
       next unless d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
 
-      puts "----#{DISTRICT == d ? '✓ ' : ''}#{d} | size=11 bash=\"#{SELF}\" " \
+      puts "----#{'✓ ' if d == DISTRICT}#{d} | size=11 bash=\"#{SELF}\" " \
            "terminal=false refresh=true param1=--district param2=\"#{d}\""
     end
   end
   puts '--Сповіщення | size=11'
-  puts "----#{NOTIFY ? '✓ ' : ''}Увімкнені | size=11 bash=\"#{SELF}\" terminal=false " \
+  puts "----#{'✓ ' if NOTIFY}Увімкнені | size=11 bash=\"#{SELF}\" terminal=false " \
        "refresh=true param1=--notify param2=#{NOTIFY ? 'off' : 'on'}"
   puts '----Попереджати за | size=11'
   [5, 10, 15, 30, 60].each do |m|
-    puts "------#{WARN == m ? '✓ ' : ''}#{m} хв | size=11 bash=\"#{SELF}\" " \
+    puts "------#{'✓ ' if m == WARN}#{m} хв | size=11 bash=\"#{SELF}\" " \
          "terminal=false refresh=true param1=--warn param2=#{m}"
   end
 
@@ -88,8 +89,20 @@ def no_schedule(alert, emergency, area, headline, hint, updated = nil)
   # says "no planned outages in the available schedules"; the other 17
   # regions say "no confirmed current data", which is a different thing.
   settled = area && area['dataState'] == 'available' && area['level'].to_i < 2
-  icon = if emergency then '🚨' elsif settled then '💡' else '❔' end
-  colour = if emergency then 'red' elsif settled then 'green' else 'orange' end
+  icon = if emergency
+           '🚨'
+         elsif settled
+           '💡'
+         else
+           '❔'
+         end
+  colour = if emergency
+             'red'
+           elsif settled
+             'green'
+           else
+             'orange'
+           end
 
   puts "#{siren_prefix(alert)}#{icon}"
   puts '---'

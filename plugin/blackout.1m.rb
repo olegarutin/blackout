@@ -54,14 +54,14 @@ end
 # The region becomes part of a URL and of a cache path, so only known
 # keys are accepted. The queue is matched against a strict pattern: it
 # reaches the menu text, where '|' starts the parameters.
-raw_region = utf8(ENV['BLACKOUT_REGION']) || cfg['region']
-raw_queue  = utf8(ENV['BLACKOUT_QUEUE'])  || cfg['queue']
+raw_region = utf8(ENV.fetch('BLACKOUT_REGION', nil)) || cfg['region']
+raw_queue  = utf8(ENV.fetch('BLACKOUT_QUEUE', nil))  || cfg['queue']
 
 # Until a choice is made, showing one region as "yours" is a lie to
 # everyone else. The fallbacks stay so the rest of the code has
 # something to work with, but the picker outranks any schedule.
-CONFIGURED = (REGIONS.key?(raw_region) &&
-              raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)) ? true : false
+CONFIGURED = REGIONS.key?(raw_region) &&
+             raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)
 REGION = REGIONS.key?(raw_region) ? raw_region : 'Cherkasyoblenergo'
 QUEUE  = raw_queue.to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/) ? raw_queue : 'GPV1.1'
 WARN   = (cfg['warn_minutes'] || 15).to_i
@@ -69,7 +69,7 @@ NOTIFY = cfg.fetch('notify', true)
 ALERTS_ON = cfg.fetch('alerts', true)
 # The district name came from a menu built out of network data, so
 # check its shape before trusting it
-raw_district = utf8(ENV['BLACKOUT_DISTRICT']) || cfg['district']
+raw_district = utf8(ENV.fetch('BLACKOUT_DISTRICT', nil)) || cfg['district']
 DISTRICT = raw_district.to_s.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/) ? raw_district : nil
 
 render

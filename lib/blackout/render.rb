@@ -17,30 +17,28 @@ def render
   end
 
   alert = nil
-  if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2))
-    if (al = fetch_alerts)
-      st = al.dig('states', oblast)
-      if st
-        # An alert can cover a whole oblast or only some districts; in
-        # the second case the oblast flag stays false
-        hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
-        # With a district chosen, an alert in the next one is not ours.
-        # An oblast-wide announcement still counts either way.
-        hot = hot.select { |name, _| name == DISTRICT } if DISTRICT && !st['enabled']
-        if st['enabled'] || hot.any?
-          levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
-          # red outranks yellow; a missing level defaults to red
-          level = levels.include?('red') ? 'red' : levels.first
-          starts = ([st['enabled_at']] + hot.values.map { |v| v['enabled_at'] }).compact
-          # The date comes from the network: a broken one must not crash us
-          since = begin
-            starts.min ? Time.parse(starts.min) : nil
-          rescue ArgumentError, TypeError
-            nil
-          end
-          alert = { since: since, level: level, districts: hot.keys,
-                    whole: st['enabled'] }
+  if ALERTS_ON && (oblast = REGIONS.dig(REGION, 2)) && (al = fetch_alerts)
+    st = al.dig('states', oblast)
+    if st
+      # An alert can cover a whole oblast or only some districts; in
+      # the second case the oblast flag stays false
+      hot = (st['districts'] || {}).select { |_, v| v['enabled'] }
+      # With a district chosen, an alert in the next one is not ours.
+      # An oblast-wide announcement still counts either way.
+      hot = hot.select { |name, _| name == DISTRICT } if DISTRICT && !st['enabled']
+      if st['enabled'] || hot.any?
+        levels = ([st['alert_level']] + hot.values.map { |v| v['alert_level'] }).compact
+        # red outranks yellow; a missing level defaults to red
+        level = levels.include?('red') ? 'red' : levels.first
+        starts = ([st['enabled_at']] + hot.values.map { |v| v['enabled_at'] }).compact
+        # The date comes from the network: a broken one must not crash us
+        since = begin
+          starts.min ? Time.parse(starts.min) : nil
+        rescue ArgumentError, TypeError
+          nil
         end
+        alert = { since: since, level: level, districts: hot.keys,
+                  whole: st['enabled'] }
       end
     end
   end
@@ -111,7 +109,9 @@ def render
     puts '❌ немає черги'
     puts '---'
     puts "Черга #{QUEUE.sub('GPV', '')} відсутня в даних цього регіону | color=red"
-    puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map { |k| k.sub('GPV', '') }.join(', '))} | size=11 color=gray"
+    puts "Доступні: #{safe((raw_days&.dig(today_key) || {}).keys.map do |k|
+      k.sub('GPV', '')
+    end.join(', '))} | size=11 color=gray"
     puts 'Обери свою нижче, у Налаштуваннях | size=11 color=gray'
     render_alert(alert)
     settings_menu((raw_days&.dig(today_key) || {}).keys)
@@ -139,7 +139,10 @@ def render
     # 2. Emergency outages started or ended
     if state['emergency'] != emergency.to_s
       notify('Аварійні відключення', 'Графік не діє — відключають поза ним') if emergency
-      notify('Повернулись до графіка', 'Аварійні відключення скасовано') if state['emergency'].to_s != '' && !emergency
+      if state['emergency'].to_s != '' && !emergency
+        notify('Повернулись до графіка',
+               'Аварійні відключення скасовано')
+      end
       state['emergency'] = emergency.to_s
     end
 
@@ -186,7 +189,11 @@ def render
   else
     # During an emergency the schedule does not apply, so a countdown
     # based on it would be dishonest
-    icon = emergency ? '🚨' : (on ? '💡' : '🕯️')
+    icon = if emergency
+             '🚨'
+           else
+             (on ? '💡' : '🕯️')
+           end
     urgent = left && left <= WARN ? ' ⏳' : ''
     siren = siren_prefix(alert)
     puts(if emergency then "#{siren}🚨"
@@ -205,8 +212,9 @@ def render
            else 'Світло є · більше відключень сьогодні не буде | color=green size=14'
            end)
     else
-      puts(left ? "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
-                : 'Світла немає | color=red size=14')
+      puts(if left then "Світла немає · увімкнуть через #{fmt(left)} | color=red size=14"
+           else 'Світла немає | color=red size=14'
+           end)
     end
   end
 
@@ -216,7 +224,10 @@ def render
     puts '---'
     puts "📰 #{safe(news['title'])} | size=12 color=gray"
     excerpt = safe(news['excerpt']).to_s
-    puts "#{excerpt[0, 150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90" unless excerpt.empty?
+    unless excerpt.empty?
+      puts "#{excerpt[0,
+                      150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90"
+    end
     slug = url_part(news['slug'])
     date_slug = url_part(news['dateSlug'])
     if slug && date_slug
@@ -230,9 +241,7 @@ def render
           else 'Сьогодні'
           end
   puts "#{label} | size=12 color=gray"
-  if today.all?
-    puts '● Відключень немає | color=green size=13 font=Menlo'
-  end
+  puts '● Відключень немає | color=green size=13 font=Menlo' if today.all?
   segments(today).each do |from, to, lit|
     next if today.all?
 

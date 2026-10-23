@@ -1,22 +1,26 @@
 AllCops:
-  TargetRubyVersion: 2.6          # штатний Ruby у macOS
+  TargetRubyVersion: 2.6          # the Ruby that ships with macOS
   NewCops: enable
 
-# Плагін SwiftBar — це один самодостатній файл, який копіюють цілком.
-# Розбивати його на класи заради метрик означає зламати спосіб встановлення.
+# The menu is printed as long runs of puts; splitting them into classes
+# to satisfy a metric would make the output harder to follow, not easier.
 Metrics:
   Enabled: false
 
-# Назви тестів українською — свідомий вибір, щоб звіт читався без перекладу
-Naming/AsciiIdentifiers:
-  Enabled: false
-
+# Menu strings and the region table are Ukrainian, because users read them.
 Style/AsciiComments:
   Enabled: false
 
-# Скрипт виводить багато рядків меню поспіль — це не «довгий метод»
 Layout/LineLength:
   Max: 110
+  Exclude:
+    - 'lib/blackout/regions.rb'  # one aligned row per region reads better whole
+    - 'test/test_blackout.rb'    # assertion messages carry the context
+
+# format('%02d:00 – %02d:00', from, to) is clearer than annotated tokens
+# when every argument is a number in the order it is printed.
+Style/FormatStringToken:
+  Enabled: false
 
 Style/Documentation:
   Enabled: false
