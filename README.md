@@ -38,7 +38,7 @@
 
 ```sh
 brew install --cask swiftbar
-git clone --branch v1.1.0 https://github.com/olegarutin/blackout.git ~/blackout
+git clone --branch v1.2.0 https://github.com/olegarutin/blackout.git ~/blackout
 chmod +x ~/blackout/plugin/blackout.1m.rb
 open -a SwiftBar
 ```
