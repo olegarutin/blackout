@@ -83,11 +83,19 @@ end
 # there is one, explains the reason better than we could.
 def no_schedule(alert, emergency, area, headline, hint, updated = nil)
   label = area && safe(area['label'])
-  puts(emergency ? "#{siren_prefix(alert)}🚨" : "#{siren_prefix(alert)}❔")
+  # The grid tells "no outages" and "we do not know" apart, and so should
+  # we: dataState 'available' at a low level is good news, not a gap. It
+  # says "no planned outages in the available schedules"; the other 17
+  # regions say "no confirmed current data", which is a different thing.
+  settled = area && area['dataState'] == 'available' && area['level'].to_i < 2
+  icon = if emergency then '🚨' elsif settled then '💡' else '❔' end
+  colour = if emergency then 'red' elsif settled then 'green' else 'orange' end
+
+  puts "#{siren_prefix(alert)}#{icon}"
   puts '---'
   puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
-  puts "#{label || headline} | color=#{emergency ? 'red' : 'orange'} size=14"
-  puts "#{hint} | size=11 color=gray" unless emergency
+  puts "#{label || headline} | color=#{colour} size=14"
+  puts "#{hint} | size=11 color=gray" unless emergency || settled
   puts "Оновлено: #{fmt_updated(updated)} | size=11 color=gray" if updated
   render_alert(alert)
   settings_menu

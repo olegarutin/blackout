@@ -999,6 +999,63 @@ class TestEmptySchedule < Minitest::Test
   end
 end
 
+# The grid says "no planned outages in the available schedules" for one
+# region and "no confirmed current data" for seventeen others. Those are
+# different answers and must not share an icon.
+class TestNoOutagesVsNoData < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-nodata')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    w('sd-cherkaska-oblast', [])
+    w('Cherkasyoblenergo', {})
+    w('alerts', 'states' => {})
+    w('notice', {})
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  def energy(state, level, label)
+    w('energy', [{ 'name' => 'Черкаська область', 'slug' => 'cherkaska-oblast',
+                   'level' => level, 'dataState' => state, 'label' => label }])
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_no_outages_reads_as_good_news
+    energy('available', 0, 'У доступних графіках немає планових відключень')
+    out = run_plugin
+
+    assert_match(/💡/, out.lines.first)
+    refute_match(/❔/, out.lines.first)
+    assert_match(/color=green/, out)
+  end
+
+  def test_no_data_stays_a_question_mark
+    energy('unknown', 0, 'Немає підтверджених актуальних даних')
+    out = run_plugin
+
+    assert_match(/❔/, out.lines.first)
+    refute_match(/💡/, out.lines.first)
+    assert_match(/Немає підтверджених/, out)
+  end
+
+  def test_emergency_still_wins
+    energy('available', 3, 'Аварійні відключення')
+    assert_match(/🚨/, run_plugin.lines.first)
+  end
+end
+
 class TestTimezone < Minitest::Test
   ZONES = ['Europe/Kyiv', 'Europe/Lisbon', 'America/New_York', 'Asia/Tokyo', 'UTC'].freeze
 
