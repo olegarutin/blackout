@@ -1,23 +1,23 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Тести для blackout.1m.rb
+# Tests for Blackout.
 #
-# Два рівні:
-#   1. Чисті функції — витягуються з вихідника і перевіряються напряму
-#   2. Інтеграційні — скрипт запускається процесом із тимчасовим HOME
-#      і підготованим кешем, тож у мережу не ходить
+# Two levels:
+#   1. Pure functions, lifted out of lib/ and called directly
+#   2. Integration: the plugin runs as a process with a temporary HOME
+#      and a pre-seeded cache, so it never touches the network
 #
-# Запуск: ruby test/test_blackout.rb
+# Run: ruby test/test_blackout.rb
 
-# Без змінних локалі Ruby читає файли й вивід підпроцесів як US-ASCII,
-# і кирилиця ламає порівняння. Фіксуємо явно.
+# Without locale variables Ruby reads files and subprocess output as
+# US-ASCII, and Cyrillic breaks the comparisons. Pin it.
 Encoding.default_external = Encoding::UTF_8
 Encoding.default_internal = Encoding::UTF_8
 
-# Фікстури — це дані джерела, а ключ дня в них завжди київська північ.
-# Плагін теж рахує за Києвом, тож тест мусить будувати мітки так само,
-# інакше на раннері в UTC фікстура й плагін говорять про різні доби.
+# Fixtures are source data, and their day key is always Kyiv midnight.
+# The plugin counts in Kyiv too, so the tests must build timestamps the
+# same way — on a UTC runner they would otherwise mean different days.
 ENV['TZ'] = 'Europe/Kyiv'
 
 require 'minitest/autorun'
@@ -29,11 +29,16 @@ require 'fileutils'
 require 'open3'
 
 PLUGIN = File.expand_path('../plugin/blackout.1m.rb', __dir__)
-SOURCE = File.read(PLUGIN, encoding: 'UTF-8')
+LIB    = File.expand_path('../lib', __dir__)
 
-# Витягуємо чисті функції без запуску скрипта
+# Pure functions live in lib/blackout/*.rb; the plugin file is only the
+# entry point. Read them all so a function can be lifted out by name.
+SOURCE = (Dir[File.join(LIB, 'blackout', '*.rb')].sort + [PLUGIN])
+         .map { |f| File.read(f, encoding: 'UTF-8') }.join("\n")
+
+# Lift pure functions out without running the plugin
 module Pure
-  # Константи, на які вони спираються
+  # Constants they lean on
   %w[HOUR_VALUES].each do |const|
     body = SOURCE[/^#{const}\s*=.*?freeze$/m]
     raise "не знайдено константу #{const}" unless body
@@ -53,24 +58,24 @@ module Pure
   end
 end
 
-# ── Чисті функції ────────────────────────────────────────────────────
+# ── Pure functions ───────────────────────────────────────────────────
 
 class TestSafe < Minitest::Test
-  def test_вирізає_роздільник_параметрів
-    # SwiftBar читає '|' як початок параметрів, а bash= виконує команди
+  def test_strips_the_parameter_separator
+    # The host reads '|' as the start of parameters, and bash= runs commands
     refute_includes Pure.safe('Район | bash=/bin/sh'), '|'
   end
 
-  def test_не_псує_звичайний_текст
+  def test_leaves_ordinary_text_alone
     assert_equal 'Черкаський район, Уманський район',
                  Pure.safe('Черкаський район, Уманський район')
   end
 
-  def test_обрізає_пробіли
+  def test_trims_whitespace
     assert_equal 'текст', Pure.safe('  текст  ')
   end
 
-  def test_приймає_nil
+  def test_accepts_nil
     assert_equal '', Pure.safe(nil)
   end
 end
@@ -80,43 +85,43 @@ class TestValidSchedule < Minitest::Test
     { 'fact' => { 'data' => { '1791406800' => groups }, 'today' => 1_791_406_800 } }
   end
 
-  def test_приймає_коректні_дані
+  def test_accepts_valid_data
     assert Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => 'yes', '2' => 'no' }))
   end
 
-  def test_приймає_значення_first_і_second
+  def test_accepts_first_and_second_values
     assert Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => 'first', '2' => 'second' }))
   end
 
-  def test_приймає_київські_номери_черг
+  def test_accepts_kyiv_queue_numbers
     assert Pure.valid_schedule?(valid_doc('GPV60.1' => { '1' => 'yes' }))
   end
 
-  def test_відхиляє_чужі_значення_годин
+  def test_rejects_unknown_hour_values
     refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '1' => '<script>' }))
   end
 
-  def test_відхиляє_інєкцію_в_назві_черги
+  def test_rejects_injection_in_a_queue_name
     refute Pure.valid_schedule?(valid_doc('GPV1.1 | bash=sh' => { '1' => 'yes' }))
   end
 
-  def test_відхиляє_години_поза_діапазоном
+  def test_rejects_hours_out_of_range
     refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '99' => 'yes' }))
     refute Pure.valid_schedule?(valid_doc('GPV1.1' => { '0' => 'yes' }))
   end
 
-  def test_відхиляє_несправжню_дату
+  def test_rejects_a_bogus_date
     doc = { 'fact' => { 'data' => { 'не-дата' => { 'GPV1.1' => { '1' => 'yes' } } } } }
     refute Pure.valid_schedule?(doc)
   end
 
-  def test_відхиляє_не_обєкт
+  def test_rejects_a_non_object
     refute Pure.valid_schedule?({ 'fact' => { 'data' => 'сміття' } })
     refute Pure.valid_schedule?('зовсім не те')
   end
 
-  def test_приймає_порожні_дані
-    # Дніпро й Одеса віддають порожній масив, коли відключень немає
+  def test_accepts_empty_data
+    # Some regions send an empty array when there are no outages
     assert Pure.valid_schedule?({ 'fact' => { 'data' => [] } })
     assert Pure.valid_schedule?({ 'fact' => {} })
   end
@@ -127,31 +132,31 @@ class TestHoursFor < Minitest::Test
     { 'fact' => { 'data' => { 'd' => { 'GPV1.1' => hours } } } }
   end
 
-  def test_година_n_це_інтервал_n_мінус_один
-    # ключ "22" у джерелі означає 21:00–22:00
+  def test_hour_n_is_the_interval_before_it
+    # key "22" in the source means 21:00-22:00
     h = Pure.hours_for(doc((1..24).to_h { |i| [i.to_s, i == 22 ? 'no' : 'yes'] }), 'GPV1.1', 'd')
     refute h[21], 'індекс 21 має бути без світла'
     assert h[20]
     assert h[22]
   end
 
-  def test_first_рахується_як_без_світла
+  def test_first_counts_as_no_power
     h = Pure.hours_for(doc('1' => 'first'), 'GPV1.1', 'd')
     refute h[0]
   end
 
-  def test_невідома_черга
+  def test_unknown_queue
     assert_nil Pure.hours_for(doc('1' => 'yes'), 'GPV9.9', 'd')
   end
 end
 
 class TestSegments < Minitest::Test
-  def test_групує_однакові_години
+  def test_groups_equal_hours
     hours = ([true] * 3) + ([false] * 2) + ([true] * 19)
     assert_equal [[0, 3, true], [3, 5, false], [5, 24, true]], Pure.segments(hours)
   end
 
-  def test_весь_день_один_відрізок
+  def test_a_whole_day_is_one_segment
     assert_equal [[0, 24, true]], Pure.segments([true] * 24)
   end
 end
@@ -161,57 +166,57 @@ class TestMinutesUntilChange < Minitest::Test
     Time.new(2026, 10, 8, hour, min)
   end
 
-  def test_рахує_до_зміни_сьогодні
+  def test_counts_to_the_change_today
     today = ([true] * 16) + ([false] * 8)
     assert_equal 120, Pure.minutes_until_change(today, nil, at(14, 0))
   end
 
-  def test_переходить_на_завтра
+  def test_rolls_over_to_tomorrow
     today = [true] * 24
     tomorrow = [false] * 24
     assert_equal 60, Pure.minutes_until_change(today, tomorrow, at(23, 0))
   end
 
-  def test_нема_змін_взагалі
+  def test_no_change_at_all
     assert_nil Pure.minutes_until_change([true] * 24, [true] * 24, at(12, 0))
   end
 end
 
 class TestSirenPrefix < Minitest::Test
-  def test_жовтий_це_дрони
+  def test_yellow_means_drones
     assert_equal '🟡 ', Pure.siren_prefix({ level: 'yellow' })
   end
 
-  def test_червоний_це_ракети
+  def test_red_means_missiles
     assert_equal '🔴 ', Pure.siren_prefix({ level: 'red' })
   end
 
-  def test_невідомий_рівень_вважається_червоним
-    # Документація alerts.in.ua: де рівня немає, тривога трактується як червона
+  def test_an_unknown_level_counts_as_red
+    # Published semantics: a missing level is treated as red
     assert_equal '🔴 ', Pure.siren_prefix({ level: nil })
   end
 
-  def test_без_тривоги_нічого
+  def test_no_alert_no_prefix
     assert_equal '', Pure.siren_prefix(nil)
   end
 end
 
 class TestFmt < Minitest::Test
-  def test_формат_годин_і_хвилин
+  def test_formats_hours_and_minutes
     assert_equal '2:05', Pure.fmt(125)
     assert_equal '0:07', Pure.fmt(7)
     assert_equal '12:00', Pure.fmt(720)
   end
 end
 
-# ── Інтеграційні ─────────────────────────────────────────────────────
+# ── Integration ──────────────────────────────────────────────────────
 
 class TestIntegration < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-test')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
-    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
   end
@@ -224,7 +229,7 @@ class TestIntegration < Minitest::Test
     File.write(File.join(@home, '.cache', 'blackout', "#{name}.json"), JSON.generate(doc))
   end
 
-  # Рівень обмежень по областях. Без цього тести лізуть у мережу.
+  # Restriction levels per oblast. Without this the tests hit the network.
   def write_notice(title = nil)
     write_cache('notice', title ? { 'breaking' => { 'title' => title, 'excerpt' => 'текст',
                                                     'slug' => 's', 'dateSlug' => '2026-10-14' } } : {})
@@ -252,7 +257,7 @@ class TestIntegration < Minitest::Test
     [out, err, st]
   end
 
-  def test_показує_графік_із_кешу_без_мережі
+  def test_shows_the_cached_schedule_offline
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -263,7 +268,7 @@ class TestIntegration < Minitest::Test
     assert_match(/💡/, out)
   end
 
-  def test_застарілі_дані_позначаються
+  def test_stale_data_is_labelled
     write_cache('Cherkasyoblenergo', schedule(day_offset: -90))
     write_energy
     write_notice
@@ -273,7 +278,7 @@ class TestIntegration < Minitest::Test
     assert_match(/застаріл/i, out)
   end
 
-  def test_вчорашній_графік_це_невідомість_а_не_застарілість
+  def test_yesterdays_schedule_is_unknown_not_stale
     write_cache('Cherkasyoblenergo', schedule(day_offset: -1))
     write_energy
     write_notice
@@ -283,7 +288,7 @@ class TestIntegration < Minitest::Test
     assert_match(/на сьогодні немає/, out)
   end
 
-  def test_невідомий_регіон_відкочується_на_типовий
+  def test_an_unknown_region_falls_back
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -293,7 +298,7 @@ class TestIntegration < Minitest::Test
     assert_match(/Черкаська/, out)
   end
 
-  def test_інєкція_через_чергу_не_проходить
+  def test_injection_through_the_queue_fails
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -302,7 +307,7 @@ class TestIntegration < Minitest::Test
     refute_match(%r{bash=/bin/sh}, out)
   end
 
-  def test_назва_району_з_мережі_санітизується
+  def test_a_district_name_from_the_network_is_sanitised
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -323,15 +328,15 @@ class TestIntegration < Minitest::Test
     line = out.lines.find { |l| l.start_with?('Райони:') }
     refute_nil line, 'рядок з районами має бути'
 
-    # SwiftBar ділить текст і параметри на ПЕРШОМУ '|'.
-    # Якщо санітизація спрацювала, bash= лишиться в тексті, а не стане параметром.
+    # The host splits text from parameters on the FIRST '|'. If the
+    # sanitiser worked, bash= stays in the text instead of becoming one.
     _title, params = line.split('|', 2)
     refute_includes params.to_s, 'bash=',
                     'назва району з мережі не має ставати параметром меню'
     assert_match(/Тривога/, out)
   end
 
-  def test_пошкоджений_кеш_не_кладе_скрипт
+  def test_a_corrupt_cache_does_not_crash_it
     File.write(File.join(@home, '.cache', 'blackout', 'Cherkasyoblenergo.json'), '{зламано')
     write_energy
     write_notice
@@ -341,7 +346,7 @@ class TestIntegration < Minitest::Test
     assert_empty err
   end
 
-  def test_зіпсована_дата_тривоги_не_кладе_скрипт
+  def test_a_broken_alert_date_does_not_crash_it
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -359,8 +364,8 @@ class TestIntegration < Minitest::Test
     assert_match(/Тривога/, out)
   end
 
-  def test_тривога_лише_по_районах_помічається
-    # Прапорець області лишається false, горять тільки райони
+  def test_a_district_only_alert_is_noticed
+    # The oblast flag stays false; only districts are lit
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -380,7 +385,7 @@ class TestIntegration < Minitest::Test
     assert_match(/Уманський район/, out)
   end
 
-  def test_перемикач_не_приймає_чужий_регіон
+  def test_the_switch_rejects_an_unknown_region
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -390,7 +395,7 @@ class TestIntegration < Minitest::Test
     refute File.exist?(cfg), 'конфіг не мав створитись'
   end
 
-  def test_перемикач_приймає_відомий_регіон
+  def test_the_switch_accepts_a_known_region
     write_cache('kyiv', schedule)
     write_energy
     write_notice
@@ -401,7 +406,7 @@ class TestIntegration < Minitest::Test
     assert_equal 'GPV5.1', cfg['queue']
   end
 
-  def test_попередження_обмежене_діапазоном
+  def test_the_warning_window_is_clamped
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -411,9 +416,10 @@ class TestIntegration < Minitest::Test
     assert_equal 720, cfg['warn_minutes']
   end
 
-  # Назва черги з кешу йде у значення param3 пункту меню. Доки схема
-  # перевірялась лише на записі, підмінений кеш міг додати власний bash=.
-  def test_отруєна_назва_черги_з_кешу_не_йде_в_параметри
+  # A queue name from the cache lands in a menu item's param3. While the
+  # schema was checked on write only, a tampered cache could add its own
+  # bash= there.
+  def test_a_poisoned_queue_name_stays_out_of_parameters
     day = Date.today
     ts = Time.new(day.year, day.month, day.day).to_i
     hours = (1..24).to_h { |i| [i.to_s, 'yes'] }
@@ -436,8 +442,8 @@ class TestIntegration < Minitest::Test
     end
   end
 
-  def test_у_виводі_немає_селекторів_варіації
-    # U+FE0F малюється квадратиком у шрифті menu bar
+  def test_no_variation_selectors_in_the_output
+    # U+FE0F renders as a tofu box in the menu-bar font
     write_cache('Cherkasyoblenergo', schedule)
     write_energy
     write_notice
@@ -453,20 +459,20 @@ class TestHourValues < Minitest::Test
     { 'fact' => { 'data' => { '1791406800' => { 'GPV1.1' => { '1' => value } } } } }
   end
 
-  def test_приймає_всі_документовані_значення
-    # preset.time_type у джерелі: yes, no, first, second, maybe, mfirst, msecond
+  def test_accepts_every_documented_value
+    # preset.time_type in the source: yes, no, first, second, maybe, …
     %w[yes no first second maybe mfirst msecond].each do |v|
       assert Pure.valid_schedule?(doc(v)), "значення #{v} має прийматись"
     end
   end
 
-  def test_відхиляє_недокументоване
+  def test_rejects_undocumented_values
     refute Pure.valid_schedule?(doc('<script>'))
     refute Pure.valid_schedule?(doc('possibly'))
   end
 
-  def test_світло_лише_при_yes
-    # Часткові й імовірні відключення трактуємо як «світла не буде»
+  def test_power_is_on_only_for_yes
+    # Partial and possible outages both count as "no power"
     %w[no first second maybe mfirst msecond].each do |v|
       h = Pure.hours_for({ 'fact' => { 'data' => { 'd' => { 'GPV1.1' => { '1' => v } } } } },
                          'GPV1.1', 'd')
@@ -480,7 +486,7 @@ class TestEmergency < Minitest::Test
     @home = Dir.mktmpdir('blackout-emergency')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
-    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     day = Date.today
@@ -509,27 +515,27 @@ class TestEmergency < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  def test_рівень_3_це_аварійні
+  def test_level_3_means_emergency
     energy(3, 'Аварійні відключення')
     out = run_plugin
     assert_match(/🚨/, out.lines.first)
     assert_match(/Графік не діє/, out)
   end
 
-  def test_під_час_аварійних_відлік_не_показується
-    # Графік не діє, тож показувати за ним час до зміни було б брехнею
+  def test_no_countdown_during_an_emergency
+    # The schedule does not apply, so a countdown from it would lie
     energy(3, 'Аварійні відключення')
     assert_equal '🚨', run_plugin.lines.first.strip
   end
 
-  def test_рівень_2_це_звичайний_графік
+  def test_level_2_is_an_ordinary_schedule
     energy(2, 'Погодинні графіки відключень')
     out = run_plugin
     refute_match(/🚨/, out.lines.first)
     assert_match(/💡/, out.lines.first)
   end
 
-  def test_невідома_область_не_ламає
+  def test_an_unknown_oblast_does_not_break_it
     write('energy', [{ 'name' => 'Марсіанська область', 'level' => 3, 'label' => 'Аварійні' }])
     out, err, st = Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
                                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN)
@@ -538,7 +544,7 @@ class TestEmergency < Minitest::Test
     refute_match(/🚨/, out.lines.first)
   end
 
-  def test_мітка_з_мережі_санітизується
+  def test_a_label_from_the_network_is_sanitised
     energy(3, 'Аварійні | bash=/bin/sh')
     line = run_plugin.lines.find { |l| l.include?('Аварійні') }
     _title, params = line.split('|', 2)
@@ -551,7 +557,7 @@ class TestDaySelection < Minitest::Test
     @home = Dir.mktmpdir('blackout-day')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
-    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'alerts.json'), '{"states":{}}')
@@ -568,9 +574,9 @@ class TestDaySelection < Minitest::Test
     Time.new(d.year, d.month, d.day).to_i
   end
 
-  def test_бере_сьогоднішній_день_навіть_коли_поле_today_відстає
-    # Опівночі джерело ще віддає вчорашнє fact.today, хоча сьогоднішній
-    # графік у файлі вже є. Старий код показував би ❔
+  def test_picks_today_even_when_the_today_field_lags
+    # Around midnight the source still sends yesterday's fact.today even
+    # though today's schedule is already in the file.
     doc = { 'fact' => {
       'data' => {
         ts(-1).to_s => { 'GPV1.1' => (1..24).to_h { |i| [i.to_s, 'no'] } },
@@ -593,7 +599,7 @@ class TestNotice < Minitest::Test
     @home = Dir.mktmpdir('blackout-notice')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
-    # Порожній масив = alerts.energy даних не має, працює запасне джерело
+    # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
     File.write(File.join(@home, '.cache', 'blackout', 'sd-kyiv.json'), '[]')
     d = Date.today
@@ -616,7 +622,7 @@ class TestNotice < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  def test_показує_новину
+  def test_shows_the_notice
     w('notice', 'breaking' => { 'title' => 'Обмеження 16:00-22:00', 'excerpt' => 'Через атаку',
                                 'slug' => 'obmezhennia', 'dateSlug' => '2026-10-14' })
     out = run_plugin
@@ -624,12 +630,12 @@ class TestNotice < Minitest::Test
     assert_match(%r{href=https://alerts.energy/news/2026-10-14/obmezhennia}, out)
   end
 
-  def test_без_новини_нічого_не_показує
+  def test_shows_nothing_without_a_notice
     w('notice', {})
     refute_match(/📰/, run_plugin)
   end
 
-  def test_новина_з_мережі_санітизується
+  def test_a_notice_from_the_network_is_sanitised
     w('notice', 'breaking' => { 'title' => 'Атака | bash=/bin/sh', 'excerpt' => '' })
     line = run_plugin.lines.find { |l| l.include?('📰') }
     _title, params = line.split('|', 2)
@@ -653,7 +659,7 @@ class TestShutdownsSource < Minitest::Test
     Pure.as_schedule(rs)
   end
 
-  def test_одиниця_означає_відключення
+  def test_one_means_an_outage
     d = built(rows)
     ts = d['fact']['data'].keys.first
     h = d['fact']['data'][ts]['GPV1.1']
@@ -663,8 +669,8 @@ class TestShutdownsSource < Minitest::Test
     assert_equal 'yes', h['13']
   end
 
-  def test_обирає_обленерго_а_не_залізницю
-    # На одну чергу буває кілька постачальників із різними графіками
+  def test_prefers_the_utility_over_the_railway
+    # One queue can have several suppliers with different schedules
     uz = { 'initiator' => 'cherkaska_oblast_uz', 'queue' => '1.1',
            'today' => (([0] * 15) + [1, 1] + ([0] * 7)), 'todayPossible' => [0] * 24,
            'todayStatus' => 'ScheduleApplies', 'todayDate' => Date.today.to_s }
@@ -674,25 +680,25 @@ class TestShutdownsSource < Minitest::Test
     assert_equal 'yes', h['16'], 'не має бути графік залізниці'
   end
 
-  def test_possible_стає_maybe
+  def test_possible_becomes_maybe
     rs = rows
     rs[0]['todayPossible'] = ([0] * 5) + [1] + ([0] * 18)
     h = built(rs)['fact']['data'].values.first['GPV1.1']
     assert_equal 'maybe', h['6']
   end
 
-  def test_noshutdowns_це_світло_весь_день
+  def test_noshutdowns_means_power_all_day
     rs = [{ 'initiator' => 'x_oblenergo', 'queue' => '1.1', 'today' => [],
             'todayStatus' => 'NoShutdowns', 'todayDate' => Date.today.to_s }]
     h = built(rs)['fact']['data'].values.first['GPV1.1']
     assert_equal 24, h.values.count('yes')
   end
 
-  def test_порожні_рядки_дають_nil
+  def test_empty_rows_give_nil
     assert_nil built([])
   end
 
-  def test_результат_проходить_валідацію
+  def test_the_result_passes_validation
     assert Pure.valid_schedule?(built(rows))
   end
 end
@@ -722,10 +728,10 @@ class TestParamInjection < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  # Параметри SwiftBar розділяються ПРОБІЛАМИ, тож safe() тут не досить:
-  # вона вирізає лише '|'. Значення з мережі мають або проходити
-  # сувору перевірку, або не виводитись узагалі.
-  def test_slug_новини_не_може_підсунути_параметр
+  # Parameters are separated by SPACES, so safe() is not enough here —
+  # it only strips '|'. A value from the network either passes a strict
+  # check or is not printed at all.
+  def test_a_notice_slug_cannot_inject_a_parameter
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
                  'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
                                  'slug' => 'x terminal=true bash=/bin/sh param1=-c' }))
@@ -735,7 +741,7 @@ class TestParamInjection < Minitest::Test
     assert_match(/📰/, out, 'сама новина має лишитись')
   end
 
-  def test_нормальний_slug_дає_посилання
+  def test_an_ordinary_slug_yields_a_link
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
                  'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
                                  'slug' => 'sytuatsiia-v-energosystemi' }))
@@ -743,16 +749,16 @@ class TestParamInjection < Minitest::Test
                  run_plugin)
   end
 
-  def test_dateslug_теж_перевіряється
+  def test_the_date_slug_is_checked_too
     File.write(File.join(@cache, 'notice.json'), JSON.generate(
                  'breaking' => { 'title' => 'Н', 'excerpt' => 'т', 'dateSlug' => 'a bash=/bin/sh',
                                  'slug' => 'ok-slug' }))
     refute_match(%r{bash=/bin/sh}, run_plugin)
   end
 
-  def test_шлях_зі_пробілами_береться_в_лапки
-    # Якщо застосунок лежить у теці з пробілом, без лапок решта шляху
-    # стане окремими параметрами SwiftBar
+  def test_a_path_with_spaces_is_quoted
+    # In a directory with a space, an unquoted path would split into
+    # separate parameters
     line = run_plugin.lines.find { |l| l.include?('param1=--set') }
     refute_nil line
     assert_match(/bash="[^"]+"/, line, 'шлях має бути в лапках')
@@ -760,19 +766,19 @@ class TestParamInjection < Minitest::Test
 end
 
 class TestFmtUpdated < Minitest::Test
-  def test_iso_стає_місцевим_часом
-    # alerts.energy віддає UTC в ISO — показувати його сирим негарно
+  def test_iso_becomes_local_time
+    # The primary source sends ISO in UTC; showing that raw is ugly
     out = Pure.fmt_updated('2026-10-14T17:54:18.249Z')
     assert_match(/\A\d{2}\.\d{2} \d{2}:\d{2}\z/, out)
     refute_match(/T|Z/, out)
   end
 
-  def test_готовий_рядок_не_чіпається
-    # GitHub-репозиторії віддають уже відформатований час
+  def test_an_already_formatted_string_is_kept
+    # The mirrors send an already formatted time
     assert_equal '14.10.2026 20:54', Pure.fmt_updated('14.10.2026 20:54')
   end
 
-  def test_сміття_не_ламає
+  def test_garbage_does_not_break_it
     assert_equal 'хтозна', Pure.fmt_updated('хтозна')
     assert_equal '', Pure.fmt_updated(nil)
   end
@@ -790,52 +796,52 @@ class TestCacheIntegrity < Minitest::Test
     FileUtils.remove_entry(@home)
   end
 
-  # Якщо кеш зіпсований, а ETag валідний, сервер відповідатиме 304
-  # на порожній файл — і дані вже ніколи не завантажаться.
-  def test_зіпсований_кеш_скидає_etag
+  # With a corrupt cache and a valid ETag the server answers 304 to an
+  # empty file, and the data never loads again.
+  def test_a_corrupt_cache_drops_the_etag
     path = File.join(@cache, 'alerts.json')
     File.write(path, '')
     File.write("#{path}.etag", 'W/"abc123"')
     assert_nil Pure.read_etag(path), 'ETag не має віддаватись для нечитабельного кешу'
   end
 
-  def test_справний_кеш_віддає_etag
+  def test_a_sound_cache_yields_its_etag
     path = File.join(@cache, 'alerts.json')
     File.write(path, '{"states":{}}')
     File.write("#{path}.etag", 'W/"abc123"')
     assert_equal 'W/"abc123"', Pure.read_etag(path)
   end
 
-  def test_etag_без_кешу_не_віддається
+  def test_no_etag_without_its_cache
     path = File.join(@cache, 'nope.json')
     File.write("#{path}.etag", 'W/"abc123"')
     assert_nil Pure.read_etag(path)
   end
 
-  # ETag іде в заголовок If-None-Match. Ruby відкидає CR/LF сам,
-  # але мегабайтне значення відправив би як є.
-  def test_велетенський_etag_відкидається
+  # The ETag goes into If-None-Match. Ruby rejects CR/LF itself, but it
+  # would send a megabyte-long value as-is.
+  def test_an_oversized_etag_is_rejected
     path = File.join(@cache, 'alerts.json')
     File.write(path, '{"states":{}}')
     File.write("#{path}.etag", 'A' * 100_000)
     assert_nil Pure.read_etag(path)
   end
 
-  def test_etag_з_переносом_рядка_відкидається
+  def test_an_etag_with_a_newline_is_rejected
     path = File.join(@cache, 'alerts.json')
     File.write(path, '{"states":{}}')
     File.write("#{path}.etag", %(x\r\nX-Injected: 1))
     assert_nil Pure.read_etag(path)
   end
 
-  # Схема перевірялась лише на записі, тож пошкоджений кеш повертався як є
-  def test_кеш_з_невідомою_схемою_не_використовується
+  # The schema was checked on write only, so a damaged cache came back as-is
+  def test_a_cache_with_an_unknown_schema_is_ignored
     path = File.join(@cache, 'Cherkasyoblenergo.json')
     File.write(path, JSON.generate('fact' => { 'data' => { 'не-дата' => {} } }))
     assert_nil Pure.read_schedule(path)
   end
 
-  def test_справний_кеш_графіка_приймається
+  def test_a_sound_schedule_cache_is_accepted
     ts = Time.new(Date.today.year, Date.today.month, Date.today.day).to_i
     path = File.join(@cache, 'Cherkasyoblenergo.json')
     File.write(path, JSON.generate(
@@ -846,7 +852,7 @@ class TestCacheIntegrity < Minitest::Test
     refute_nil Pure.read_schedule(path)
   end
 
-  def test_рядки_alerts_energy_з_дивною_чергою_відкидаються
+  def test_rows_with_a_strange_queue_are_rejected
     refute Pure.valid_rows?([{ 'queue' => '1.1 bash=/bin/sh' }])
     refute Pure.valid_rows?([{ 'queue' => 'x' }])
     refute Pure.valid_rows?('не масив')
@@ -855,16 +861,16 @@ class TestCacheIntegrity < Minitest::Test
   end
 end
 
-# Зловмисна програма без особливих прав може підкласти в кеш символьне
-# посилання на будь-який файл користувача. Доки запис ішов через File.write,
-# ми перезаписували ціль даними з мережі.
-# Графік — це київські години. На маку з іншим поясом ті самі дані
-# давали протилежну відповідь: у Києві «світла немає», у Лісабоні «світло є».
-# Порожній графік — це «не знаємо», а не «світла вдосталь». Раніше
-# Одеса з нульовими даними малювала зелену 💡.
-# 18 жовтня обленерго переписало графік о 10:01, GitHub це мав, а
-# alerts.energy ще віддавав учорашню редакцію з виглядом свіжих даних.
-# Застосунок показував «світло є», коли світла вже не було.
+# A program with no special rights can plant a symlink in the cache
+# pointing at any of the user's files. While writes went through
+# File.write, we overwrote the target with network data.
+# The schedule is in Kyiv hours. On a Mac in another zone the same data
+# gave the opposite answer: "no power" in Kyiv, "power on" in Lisbon.
+# An empty schedule means "we do not know", not "plenty of power".
+# A region with zero data used to render a cheerful green bulb.
+# On 18 October the utility rewrote the schedule at 10:01 and the mirror
+# had it, while the primary source still served yesterday's revision,
+# fresh looking. The app said "power on" when there was none.
 class TestFreshestWins < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-fresh')
@@ -886,7 +892,7 @@ class TestFreshestWins < Minitest::Test
     File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
   end
 
-  # alerts.energy: учорашня редакція, світло цілий день
+  # Primary source: yesterday's revision, power all day
   def seed_primary(published)
     w('sd-cherkaska-oblast',
       [{ 'queue' => '1.1', 'initiator' => 'cherkaska_oblast_oblenergo',
@@ -895,7 +901,7 @@ class TestFreshestWins < Minitest::Test
          'todayPossible' => Array.new(24, 0) }])
   end
 
-  # GitHub: нова редакція, вимкнення з 10 до 12
+  # Mirror: a newer revision, outage from 10 to 12
   def seed_github(published)
     hours = (1..24).to_h { |h| [h.to_s, [11, 12].include?(h) ? 'no' : 'yes'] }
     w('Cherkasyoblenergo',
@@ -908,7 +914,7 @@ class TestFreshestWins < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  def test_новіша_редакція_перемагає_основне_джерело
+  def test_the_newer_revision_beats_the_primary_source
     seed_primary((Time.now - (14 * 3600)).utc.iso8601)
     seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))
     out = run_plugin
@@ -916,7 +922,7 @@ class TestFreshestWins < Minitest::Test
     assert_match(/10:00 – 12:00/, out, 'узято стару редакцію без вимкнення 10–12')
   end
 
-  def test_застарілий_github_не_перебиває_свіже_основне
+  def test_a_stale_mirror_does_not_beat_fresh_primary
     seed_primary(Time.now.utc.iso8601)
     seed_github('01.07.2026 09:00')
     out = run_plugin
@@ -924,7 +930,7 @@ class TestFreshestWins < Minitest::Test
     refute_match(/10:00 – 12:00/, out, 'липневий файл переміг сьогоднішні дані')
   end
 
-  def test_оновлено_це_час_публікації_а_не_опитування
+  def test_updated_is_publication_time_not_poll_time
     seed_primary((Time.now - (14 * 3600)).utc.iso8601)
     seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))
 
@@ -933,7 +939,7 @@ class TestFreshestWins < Minitest::Test
 end
 
 class TestPublishedAt < Minitest::Test
-  def test_обидва_формати_розбираються
+  def test_both_date_formats_parse
     iso = Pure.published_at('lastUpdated' => '2026-10-17T17:15:00.000Z')
     txt = Pure.published_at('fact' => { 'update' => '18.10.2026 10:01' })
 
@@ -942,7 +948,7 @@ class TestPublishedAt < Minitest::Test
     assert_operator txt, :>, iso, 'ранкова редакція має бути новішою за вечірню'
   end
 
-  def test_сміття_не_ламає
+  def test_garbage_does_not_break_it
     assert_nil Pure.published_at(nil)
     assert_nil Pure.published_at({})
     assert_nil Pure.published_at('fact' => { 'update' => 'хтозна' })
@@ -974,20 +980,20 @@ class TestEmptySchedule < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  def test_порожній_графік_не_видає_себе_за_світло
+  def test_an_empty_schedule_does_not_claim_power
     w('Cherkasyoblenergo', 'fact' => { 'data' => {} }, 'lastUpdated' => Time.now.iso8601)
     out = run_plugin
 
     assert_match(/❔/, out.lines.first, 'порожній графік показано як «світло є»')
     refute_match(/💡/, out.lines.first)
-    # «Тривоги немає» лишається зеленим законно — зелений не має бути
-    # лише там, де йдеться про графік
+    # "No alert" is legitimately green; the ban on green applies only
+    # to the line that talks about the schedule
     schedule_line = out.lines.find { |l| l.include?('графіка немає') }
     refute_nil schedule_line
     refute_match(/color=green/, schedule_line)
   end
 
-  def test_порожній_графік_не_показує_сирий_час
+  def test_an_empty_schedule_shows_no_raw_timestamp
     w('Cherkasyoblenergo', 'fact' => { 'data' => {} }, 'lastUpdated' => Time.now.iso8601)
     refute_match(/\d{4}-\d\d-\d\dT/, run_plugin, 'ISO-штамп замість людської дати')
   end
@@ -1004,7 +1010,7 @@ class TestTimezone < Minitest::Test
     File.write(File.join(@home, '.config', 'blackout.json'),
                JSON.generate('region' => 'Cherkasyoblenergo', 'queue' => 'GPV1.1',
                              'notify' => false, 'alerts' => false))
-    # Доба за київським часом, світло лише в першій половині
+    # A Kyiv day with power only in the first half
     day = Date.today
     ts = Time.new(day.year, day.month, day.day).to_i
     hours = (1..24).to_h { |i| [i.to_s, i <= 12 ? 'yes' : 'no'] }
@@ -1024,7 +1030,7 @@ class TestTimezone < Minitest::Test
     File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
   end
 
-  def test_відповідь_однакова_у_будь_якому_поясі
+  def test_the_answer_is_the_same_in_any_timezone
     answers = ZONES.map do |tz|
       out, = Open3.capture3({ 'HOME' => @home, 'TZ' => tz }, 'ruby', PLUGIN)
       [tz, out.lines.first.to_s.strip]
@@ -1037,7 +1043,7 @@ class TestTimezone < Minitest::Test
   end
 end
 
-# Перший запуск не має вдавати, ніби Черкащина — це область користувача
+# The first run must not pretend some default region is the user's
 class TestFirstRun < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-first')
@@ -1053,27 +1059,27 @@ class TestFirstRun < Minitest::Test
     Open3.capture3({ 'HOME' => @home }, 'ruby', PLUGIN, *args).first
   end
 
-  def test_без_конфігу_просить_вибрати_а_не_показує_чужий_графік
+  def test_with_no_config_it_asks_instead_of_guessing
     out = run_plugin
     assert_match(/Регіон не вибрано/, out)
     refute_match(/Черкаська обл\. · черга/, out, 'показано чужу область як свою')
     refute_match(/через \d+:\d\d/, out, 'показано відлік для невибраної області')
   end
 
-  def test_екран_вибору_не_ходить_у_мережу
+  def test_the_picker_makes_no_network_calls
     out = run_plugin
     assert_empty Dir.children(File.join(@home, '.cache', 'blackout')),
                  'на екрані вибору запитів бути не повинно'
     assert_match(/Черкаська обл\./, out)
   end
 
-  def test_нічого_не_позначено_галочкою
+  def test_nothing_is_ticked_before_a_choice
     refute_match(/✓/, run_plugin, 'до вибору галочки стояти не має')
   end
 
-  # 26 областей × 12 черг давали 364 рядки меню. Черги переїхали
-  # в Налаштування, де показується лише своя область.
-  def test_екран_вибору_це_лише_перелік_областей
+  # 26 regions x 12 queues came to 364 menu lines. Queues moved into
+  # Settings, where only the chosen region is expanded.
+  def test_the_picker_lists_regions_only
     out = run_plugin
     clickable = out.lines.count { |l| l.include?('param1=--set') }
 
@@ -1082,7 +1088,7 @@ class TestFirstRun < Minitest::Test
     assert_operator out.lines.size, :<, 40, 'екран вибору має лишатись коротким'
   end
 
-  def test_після_вибору_показує_графік
+  def test_after_choosing_it_shows_the_schedule
     run_plugin('--set', 'Lvivoblenerho', 'GPV3.2')
     cfg = JSON.parse(File.read(File.join(@home, '.config', 'blackout.json')))
     assert_equal 'Lvivoblenerho', cfg['region']
@@ -1105,7 +1111,7 @@ class TestSymlinkSafety < Minitest::Test
     FileUtils.remove_entry(@home)
   end
 
-  def test_запис_не_йде_за_посиланням
+  def test_a_write_does_not_follow_a_symlink
     path = File.join(@cache, 'alerts.json')
     File.symlink(@victim, path)
     Pure.atomic_write(path, '{"states":{}}')
@@ -1115,7 +1121,7 @@ class TestSymlinkSafety < Minitest::Test
     assert_equal '{"states":{}}', File.read(path)
   end
 
-  def test_touch_не_чіпає_посилання
+  def test_touch_leaves_a_symlink_alone
     path = File.join(@cache, 'alerts.json')
     File.symlink(@victim, path)
     before = File.mtime(@victim)
@@ -1124,7 +1130,7 @@ class TestSymlinkSafety < Minitest::Test
     assert_equal before, File.mtime(@victim), 'час жертви змінено'
   end
 
-  def test_touch_оновлює_звичайний_файл
+  def test_touch_updates_a_regular_file
     path = File.join(@cache, 'alerts.json')
     File.write(path, '{}')
     File.utime(Time.now - 3600, Time.now - 3600, path)
@@ -1133,7 +1139,7 @@ class TestSymlinkSafety < Minitest::Test
     assert_operator File.mtime(path), :>, Time.now - 60
   end
 
-  def test_запис_атомарний_і_без_смiття
+  def test_the_write_is_atomic_and_leaves_no_litter
     path = File.join(@cache, 'alerts.json')
     Pure.atomic_write(path, 'x' * 1000)
 
@@ -1141,14 +1147,14 @@ class TestSymlinkSafety < Minitest::Test
     assert_empty Dir.glob("#{path}*.tmp"), 'тимчасовий файл не прибрано'
   end
 
-  def test_невдалий_запис_не_лишає_tmp
+  def test_a_failed_write_leaves_no_temp_file
     path = File.join(@home, 'немає-такої-теки', 'alerts.json')
     assert_raises(StandardError) { Pure.atomic_write(path, '{}') }
     assert_empty Dir.glob(File.join(@home, '**', '*.tmp'))
   end
 
-  # Якщо посиланням є сама тека, ми писали б свої файли в чужу
-  def test_тека_посилання_відмова
+  # If the directory itself is a link, our files land in someone else's
+  def test_a_symlinked_directory_is_refused
     other = File.join(@home, 'чужа')
     FileUtils.mkdir_p(other)
     link = File.join(@home, 'link-cache')
@@ -1158,7 +1164,7 @@ class TestSymlinkSafety < Minitest::Test
     assert_empty Dir.children(other)
   end
 
-  def test_нова_тека_кешу_лише_для_власника
+  def test_a_new_cache_directory_is_owner_only
     dir = File.join(@home, 'fresh', 'blackout')
     Pure.ensure_dir(dir)
 
@@ -1189,7 +1195,7 @@ class TestDistrict < Minitest::Test
     File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
   end
 
-  # Тривога лише в Черкаському районі, користувач в Уманському
+  # The alert covers one district; the user sits in another
   def alerts_in(*hot)
     districts = ['Уманський район', 'Черкаський район'].to_h do |n|
       [n, { 'enabled' => hot.include?(n), 'alert_level' => 'yellow',
@@ -1206,29 +1212,29 @@ class TestDistrict < Minitest::Test
     Open3.capture3(base.merge(env), 'ruby', PLUGIN).first
   end
 
-  def test_чужий_район_не_показує_тривогу
+  def test_another_district_raises_no_alert
     alerts_in('Черкаський район')
     out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
     assert_match(/Тривоги немає/, out)
     refute_match(/🟡/, out.lines.first)
   end
 
-  def test_свій_район_показує_тривогу
+  def test_your_own_district_raises_the_alert
     alerts_in('Уманський район')
     out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський район')
     assert_match(/Тривога — дрони/, out)
     assert_match(/Уманський район · триває/, out)
   end
 
-  def test_без_вибору_береться_вся_область
+  def test_with_no_choice_the_whole_oblast_counts
     alerts_in('Черкаський район')
     out = run_plugin
     assert_match(/Тривога — дрони/, out)
     assert_match(/Черкаська область/, out)
   end
 
-  def test_тривога_на_всю_область_стосується_всіх
-    # Оголошення по області значуще навіть для того, хто обрав район
+  def test_an_oblast_wide_alert_applies_to_everyone
+    # An oblast-wide announcement matters even with a district chosen
     w('alerts', 'states' => { 'Черкаська область' => {
          'enabled' => true, 'alert_level' => 'red',
          'enabled_at' => Time.now.utc.iso8601, 'districts' => {}
@@ -1238,7 +1244,7 @@ class TestDistrict < Minitest::Test
     assert_match(/Уся область/, out)
   end
 
-  def test_назва_району_з_інєкцією_ігнорується
+  def test_a_district_name_with_injection_is_ignored
     alerts_in('Уманський район')
     out = run_plugin('BLACKOUT_DISTRICT' => 'Уманський bash=/bin/sh')
     refute_match(%r{bash=/bin/sh}, out)
@@ -1246,18 +1252,18 @@ class TestDistrict < Minitest::Test
 end
 
 class TestLimits < Minitest::Test
-  def test_safe_обрізає_довгий_текст
-    # Заголовок на 100 КБ розтягнув би пункт меню на весь екран
+  def test_safe_truncates_long_text
+    # A 100 KB headline would stretch a menu item across the screen
     out = Pure.safe('A' * 100_000)
     assert_operator out.length, :<=, 201
     assert out.end_with?('…')
   end
 
-  def test_safe_не_чіпає_коротке
+  def test_safe_leaves_short_text_alone
     assert_equal 'Новина', Pure.safe('Новина')
   end
 
-  def test_safe_приймає_власну_межу
+  def test_safe_takes_a_custom_limit
     assert_equal 'abc…', Pure.safe('abcdefgh', 3)
   end
 end
@@ -1287,7 +1293,7 @@ class TestOversizedData < Minitest::Test
                      'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
   end
 
-  def test_сотні_районів_не_розпирають_меню
+  def test_hundreds_of_districts_do_not_blow_up_the_menu
     districts = (0...500).to_h do |i|
       ["Район #{i}", { 'enabled' => true, 'alert_level' => 'red',
                        'enabled_at' => Time.now.utc.iso8601 }]
@@ -1306,7 +1312,7 @@ class TestOversizedData < Minitest::Test
     assert_match(/та ще \d+/, line)
   end
 
-  def test_жоден_рядок_не_довший_за_розумне
+  def test_no_line_grows_beyond_reason
     w('sd-cherkaska-oblast', [])
     w('Cherkasyoblenergo',
       'fact' => { 'update' => 'U' * 50_000,
