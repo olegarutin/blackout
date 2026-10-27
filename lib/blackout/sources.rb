@@ -7,8 +7,10 @@ ALERTS = 'https://vadimklimenko.com/map/statuses.json'
 # This is where "emergency" comes from — the schedules carry no such flag.
 ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
 # The grid operator's headline notice: the schedule says when, this says
-# why — an attack, a deficit, repairs.
-NOTICE = 'https://alerts.energy/api/v1/notices'
+# why — an attack, a deficit, repairs. Read from the public RSS feed:
+# the source's own llms.txt names pages and RSS as fair to use, and the
+# internal API as not an interface for collecting data.
+NOTICE = 'https://alerts.energy/rss.xml'
 # Primary schedule source: explicit statuses instead of guesswork.
 # The mirrors stay as a second opinion.
 SHUTDOWNS = 'https://alerts.energy/api/v1/source-registry/areas/%s/shutdowns'

@@ -25,6 +25,14 @@ end
 
 # Sources differ: the primary one sends ISO in UTC, the mirrors send an
 # already formatted string. Normalise both to local time.
+# A link taken from the feed is printed as an href= value, so it must
+# have no spaces and must point where we say it does. Anything that is
+# not a news page on that host simply is not shown.
+def news_url(str)
+  v = str.to_s
+  v.match?(%r{\Ahttps://alerts\.energy/news/[\w./-]{1,160}\z}) ? v : nil
+end
+
 def fmt_updated(str)
   v = safe(str)
   return v unless v.match?(/\A\d{4}-\d{2}-\d{2}T/)

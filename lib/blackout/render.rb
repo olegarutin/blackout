@@ -240,11 +240,8 @@ def render
       puts "#{excerpt[0,
                       150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90"
     end
-    slug = url_part(news['slug'])
-    date_slug = url_part(news['dateSlug'])
-    if slug && date_slug
-      puts "Читати | size=11 color=gray href=https://alerts.energy/news/#{date_slug}/#{slug}"
-    end
+    link = news_url(news['link'])
+    puts "Читати на alerts.energy | size=11 color=gray href=#{link}" if link
   end
 
   puts '---'

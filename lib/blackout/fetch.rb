@@ -51,14 +51,42 @@ def fetch_notice
     return read_cache(path)&.dig('breaking')
   end
 
-  parsed = JSON.parse(body)
-  raise 'unexpected schema' unless parsed.is_a?(Hash)
+  latest = first_rss_item(body)
+  raise 'unexpected schema' unless latest
 
-  atomic_write(path, body)
+  atomic_write(path, JSON.generate('breaking' => latest))
   write_etag(path, etag)
-  parsed['breaking']
+  latest
 rescue StandardError
   File.exist?(path) ? read_cache(path)&.dig('breaking') : nil
+end
+
+# The newest entry of an RSS feed, as a plain hash. Parsed with a regex
+# rather than a library because the app carries no gems, and because the
+# shape needed here is three fields of the first <item>.
+def first_rss_item(xml)
+  item = xml[%r{<item>(.*?)</item>}m, 1]
+  return nil unless item
+
+  field = lambda do |tag|
+    raw = item[%r{<#{tag}>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</#{tag}>}m, 1]
+    unescape_xml(raw)
+  end
+
+  title = safe(field.call('title'))
+  return nil if title.empty?
+
+  { 'title' => title,
+    'excerpt' => safe(field.call('description')),
+    'link' => field.call('link').to_s,
+    'date' => field.call('pubDate').to_s }
+end
+
+def unescape_xml(str)
+  return nil unless str
+
+  str.gsub('&lt;', '<').gsub('&gt;', '>').gsub('&quot;', '"')
+     .gsub('&#39;', "'").gsub('&apos;', "'").gsub('&amp;', '&')
 end
 
 # Schedules from the primary source. nil hands the job to the mirror.

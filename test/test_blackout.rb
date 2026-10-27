@@ -49,7 +49,7 @@ module Pure
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
      siren_prefix as_schedule fmt_updated read_etag read_cache
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
-     published_at].each do |name|
+     published_at first_rss_item unescape_xml news_url].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -232,7 +232,7 @@ class TestIntegration < Minitest::Test
   # Restriction levels per oblast. Without this the tests hit the network.
   def write_notice(title = nil)
     write_cache('notice', title ? { 'breaking' => { 'title' => title, 'excerpt' => 'текст',
-                                                    'slug' => 's', 'dateSlug' => '2026-10-14' } } : {})
+                                                    'link' => 'https://alerts.energy/news/2026/10/14/s' } } : {})
   end
 
   def write_energy(level = 2)
@@ -626,10 +626,11 @@ class TestNotice < Minitest::Test
 
   def test_shows_the_notice
     w('notice', 'breaking' => { 'title' => 'Обмеження 16:00-22:00', 'excerpt' => 'Через атаку',
-                                'slug' => 'obmezhennia', 'dateSlug' => '2026-10-14' })
+                                'link' => 'https://alerts.energy/news/2026/10/14/obmezhennia' })
     out = run_plugin
+
     assert_match(/📰 Обмеження 16:00-22:00/, out)
-    assert_match(%r{href=https://alerts.energy/news/2026-10-14/obmezhennia}, out)
+    assert_match(%r{href=https://alerts.energy/news/2026/10/14/obmezhennia}, out)
   end
 
   def test_shows_nothing_without_a_notice
@@ -736,32 +737,34 @@ class TestParamInjection < Minitest::Test
   # Parameters are separated by SPACES, so safe() is not enough here —
   # it only strips '|'. A value from the network either passes a strict
   # check or is not printed at all.
-  def test_a_notice_slug_cannot_inject_a_parameter
-    File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                                                   'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
-                                                                   'slug' => 'x terminal=true bash=/bin/sh param1=-c' }
-                                                 ))
-    out = run_plugin
-    refute_match(%r{bash=/bin/sh}, out, 'slug із пробілами не має ставати параметром')
-    refute_match(/Читати/, out, 'посилання з підозрілим slug не має виводитись')
-    assert_match(/📰/, out, 'сама новина має лишитись')
+  def notice(link)
+    File.write(File.join(@cache, 'notice.json'),
+               JSON.generate('breaking' => { 'title' => 'Новина', 'excerpt' => 'т',
+                                             'link' => link }))
   end
 
-  def test_an_ordinary_slug_yields_a_link
-    File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                                                   'breaking' => { 'title' => 'Новина', 'excerpt' => 'т', 'dateSlug' => '2026-10-14',
-                                                                   'slug' => 'sytuatsiia-v-energosystemi' }
-                                                 ))
-    assert_match(%r{href=https://alerts.energy/news/2026-10-14/sytuatsiia-v-energosystemi},
+  def test_a_notice_link_cannot_inject_a_parameter
+    notice('https://alerts.energy/news/x terminal=true bash=/bin/sh param1=-c')
+    out = run_plugin
+
+    refute_match(%r{bash=/bin/sh}, out, 'a link with spaces must not become a parameter')
+    refute_match(/Читати/, out, 'a suspicious link is not printed at all')
+    assert_match(/📰/, out, 'the notice itself stays')
+  end
+
+  def test_an_ordinary_link_is_printed
+    notice('https://alerts.energy/news/2026/10/14/sytuatsiia-v-energosystemi')
+
+    assert_match(%r{href=https://alerts.energy/news/2026/10/14/sytuatsiia-v-energosystemi},
                  run_plugin)
   end
 
-  def test_the_date_slug_is_checked_too
-    File.write(File.join(@cache, 'notice.json'), JSON.generate(
-                                                   'breaking' => { 'title' => 'Н', 'excerpt' => 'т', 'dateSlug' => 'a bash=/bin/sh',
-                                                                   'slug' => 'ok-slug' }
-                                                 ))
-    refute_match(%r{bash=/bin/sh}, run_plugin)
+  def test_a_link_to_another_host_is_refused
+    notice('https://evil.example/news/2026/10/14/looks-fine')
+    out = run_plugin
+
+    refute_match(/evil\.example/, out)
+    refute_match(/Читати/, out)
   end
 
   def test_a_path_with_spaces_is_quoted
@@ -1132,6 +1135,56 @@ class TestSourceLockedOut < Minitest::Test
 
     assert_match(/🚨/, out.lines.first)
     refute_match(/не перевіряються/, out)
+  end
+end
+
+# The source's llms.txt draws the line itself: pages and RSS are fair to
+# read, the internal API is not an interface for collecting data. So the
+# notice comes from the feed now, and the feed is XML, not JSON.
+class TestRssNotice < Minitest::Test
+  FEED = <<~XML
+    <rss><channel>
+    <item><title>Заходи обмеження споживання</title>
+    <link>https://alerts.energy/news/2026/10/27/zahody</link>
+    <description>У частині областей застосовуються обмеження.</description>
+    <pubDate>Tue, 27 Oct 2026 08:46:43 GMT</pubDate></item>
+    <item><title>Старіша новина</title>
+    <link>https://alerts.energy/news/2026/10/26/starisha</link>
+    <description>Не ця.</description></item>
+    </channel></rss>
+  XML
+
+  def test_takes_the_newest_item
+    item = Pure.first_rss_item(FEED)
+
+    assert_equal 'Заходи обмеження споживання', item['title']
+    assert_match(/обмеження/, item['excerpt'])
+    assert_equal 'https://alerts.energy/news/2026/10/27/zahody', item['link']
+  end
+
+  def test_a_feed_without_items_gives_nothing
+    assert_nil Pure.first_rss_item('<rss><channel></channel></rss>')
+    assert_nil Pure.first_rss_item('not xml at all')
+  end
+
+  def test_entities_come_back_as_characters
+    xml = '<rss><item><title>Світло &amp; тепло</title><link>x</link></item></rss>'
+
+    assert_equal 'Світло & тепло', Pure.first_rss_item(xml)['title']
+  end
+
+  def test_a_title_carrying_the_separator_is_stripped
+    xml = '<rss><item><title>X | bash=/bin/sh</title><link>y</link></item></rss>'
+
+    refute_includes Pure.first_rss_item(xml)['title'], '|'
+  end
+
+  def test_only_news_pages_on_that_host_become_links
+    assert Pure.news_url('https://alerts.energy/news/2026/10/27/ok')
+    assert_nil Pure.news_url('https://evil.example/news/2026/x')
+    assert_nil Pure.news_url('https://alerts.energy/account')
+    assert_nil Pure.news_url('https://alerts.energy/news/a b bash=/bin/sh')
+    assert_nil Pure.news_url(nil)
   end
 end
 

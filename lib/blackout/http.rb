@@ -12,26 +12,30 @@ READ_TIME = 8               # seconds to read the response
 # How long a host that refused us is left alone.
 DENY_BACKOFF = 1800
 
-def deny_marker(host)
-  File.join(CACHE, "deny-#{host.gsub(/[^\w.-]/, '_')}")
+# Keyed by host AND first path segment: the same host can close its API
+# while still publishing an RSS feed it asks to be read, and one refusal
+# must not take the other down with it.
+def deny_marker(uri)
+  key = "#{uri.host}#{uri.path[%r{\A/[^/]*}]}"
+  File.join(CACHE, "deny-#{key.gsub(/[^\w.-]/, '_')}")
 end
 
-def deny_host(host)
+def deny_path(uri)
   ensure_dir(CACHE)
-  FileUtils.touch(deny_marker(host))
+  FileUtils.touch(deny_marker(uri))
 rescue StandardError
   nil
 end
 
-def denied?(host)
-  m = deny_marker(host)
+def denied?(uri)
+  m = deny_marker(uri)
   File.exist?(m) && (Time.now - File.mtime(m)) < DENY_BACKOFF
 end
 
 def http_get(url, etag = nil)
   uri = URI(url)
   raise "refusing non-https url: #{uri.scheme}" unless uri.scheme == 'https'
-  raise "backing off from #{uri.host}" if denied?(uri.host)
+  raise "backing off from #{uri.host}#{uri.path}" if denied?(uri)
 
   Net::HTTP.start(uri.host, uri.port, use_ssl: true,
                                       open_timeout: OPEN_TIME,
@@ -51,7 +55,7 @@ def http_get(url, etag = nil)
       # A host that answered 401 or 403 means it, and the plugin runs
       # every minute on every machine. Stand back for a while instead of
       # knocking 1440 times a day at a door that was closed on purpose.
-      deny_host(uri.host) if [401, 403].include?(res.code.to_i)
+      deny_path(uri) if [401, 403].include?(res.code.to_i)
       raise "http #{res.code}" unless res.is_a?(Net::HTTPSuccess)
 
       # Check the cap while reading: res.body would first pull whatever
