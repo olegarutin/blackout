@@ -38,8 +38,8 @@ def unescape_xml(str)
   return nil unless str
 
   str.gsub(/&#(\d{1,6});/) { Integer(Regexp.last_match(1)).chr(Encoding::UTF_8) }
-     .gsub('&lt;', '<').gsub('&gt;', '>').gsub('&quot;', '"')
-     .gsub('&apos;', "'").gsub('&amp;', '&')
+     .gsub('&nbsp;', ' ').gsub('&lt;', '<').gsub('&gt;', '>')
+     .gsub('&quot;', '"').gsub('&apos;', "'").gsub('&amp;', '&')
 rescue StandardError
   str
 end
@@ -85,17 +85,20 @@ end
 # later; files months out of date lose that comparison on their own.
 def fetch_data(region)
   rows = fetch_shutdowns(REGIONS.dig(region, 4))
-  built = rows && as_schedule(rows)
-  built = nil unless built && valid_schedule?(built)
+  primary = rows && as_schedule(rows)
+  primary = nil unless primary && valid_schedule?(primary)
 
   github, status = fetch_from_github(region)
 
-  return [built, :fresh] if github.nil?
-  return [github, status] if built.nil?
+  # Three candidates, one rule: whichever was published last. The
+  # operator's own site usually wins — it is where the others read from
+  # — but only on the timestamp, so a broken scrape cannot promote
+  # itself past a mirror that is actually newer.
+  found = [[primary, :fresh], [github, status], [fetch_operator(region), :fresh]]
+          .select { |doc, _| doc }
+  return [nil, :error] if found.empty?
 
-  mine = published_at(built)
-  theirs = published_at(github)
-  theirs && (mine.nil? || theirs > mine) ? [github, status] : [built, :fresh]
+  found.max_by { |doc, _| published_at(doc) || Time.at(0) }
 end
 
 def fetch_from_github(region)
@@ -173,4 +176,69 @@ def fetch_revision(slug)
   at
 rescue StandardError
   nil
+end
+
+# The operator's own schedule posts, for the regions that publish them.
+# nil whenever anything is missing: the mirrors remain the floor.
+def fetch_operator(region)
+  base = OPERATOR_POSTS[region]
+  return nil unless base
+
+  ensure_dir(CACHE)
+  path = File.join(CACHE, "op-#{region}.json")
+  return read_schedule(path) if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
+
+  list = JSON.parse(http_get("#{base}/main?lang=uk&limit=200").first)
+  days, published = operator_days(base, newest_schedule_posts(list['data']))
+
+  doc = as_operator_schedule(days, published)
+  return nil unless doc && valid_schedule?(doc)
+
+  atomic_write(path, JSON.generate(doc))
+  doc
+rescue StandardError
+  read_schedule(path)
+end
+
+# Each day's post fetched and parsed, with the latest publication time.
+def operator_days(base, posts)
+  days = {}
+  published = nil
+  posts.each do |date, (slug, at)|
+    body = JSON.parse(http_get("#{base}/#{slug}?lang=uk").first)
+    queues = parse_outage_text(html_to_text(body.dig('data', 'content')))
+    next if queues.empty?
+
+    days[date] = queues
+    published = at if published.nil? || at > published
+  end
+  [days, published]
+end
+
+# The newest post per day whose title announces a schedule.
+def newest_schedule_posts(items)
+  return {} unless items.is_a?(Array)
+
+  today = Date.today
+  items.first(500).each_with_object({}) do |item, acc|
+    next unless item.is_a?(Hash)
+
+    slug = item['slug'].to_s
+    next unless item['title'].to_s[0, 300].match?(/графік\w{0,2}\s+погодинних\s+відключень/i)
+    next unless slug.match?(/\A[a-z0-9-]{1,200}\z/)
+
+    date = title_date(item['title'].to_s[0, 300], today)
+    next unless date && (date - today).to_i.between?(0, 1)
+
+    at = begin
+      Time.parse(item['publishedAt'].to_s)
+    rescue StandardError
+      nil
+    end
+    acc[date] = [slug, at] if at && (acc[date].nil? || at > acc[date][1])
+  end
+end
+
+def html_to_text(html)
+  unescape_xml(html.to_s.gsub(%r{<br\s*/?>}, "\n").gsub(%r{</p>}, "\n").gsub(/<[^>]+>/, '')).to_s
 end

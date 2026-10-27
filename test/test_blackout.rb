@@ -39,8 +39,10 @@ SOURCE = (Dir[File.join(LIB, 'blackout', '*.rb')].sort + [PLUGIN])
 # Tests must never reach the network. A deny marker makes http_get
 # refuse instantly, the same way a refused host would.
 DENY_KEYS = %w[t.me_s alerts.energy_api alerts.energy_rss.xml
+               alerts.energy_cherkaska-oblast
                raw.githubusercontent.com_yaroslav2901
                raw.githubusercontent.com_Baskerville42
+               www.cherkasyoblenergo.com_api
                vadimklimenko.com_map].freeze
 
 def offline!(cache)
@@ -51,7 +53,7 @@ end
 # Lift pure functions out without running the plugin
 module Pure
   # Constants they lean on
-  %w[HOUR_VALUES].each do |const|
+  %w[HOUR_VALUES MONTHS].each do |const|
     body = SOURCE[/^#{const}\s*=.*?freeze$/m]
     raise "не знайдено константу #{const}" unless body
 
@@ -63,7 +65,8 @@ module Pure
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
      published_at unescape_xml news_url
      telegram_posts telegram_text oblast_stem oblasts_named
-     age_phrase page_revised_at].each do |name|
+     age_phrase page_revised_at title_date parse_outage_text
+     as_operator_schedule newest_schedule_posts html_to_text].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -1259,6 +1262,79 @@ class TestPageRevision < Minitest::Test
     assert_nil Pure.page_revised_at('<p>нічого</p>')
     assert_nil Pure.page_revised_at(nil)
     assert_nil Pure.page_revised_at('Графік оновлено: 99.99, 99:99')
+  end
+end
+
+# Some operators publish through their own site API. Reading those
+# first-hand is the only way to see a revision made during the day: the
+# mirrors commit twice a day, both times in the evening.
+class TestOperatorSource < Minitest::Test
+  POST = <<~TEXT
+    Оновлення графіку погодинних відключень (ГПВ) на 27 жовтня
+    Години відсутності електропостачання:
+    1.1\u00A012:00 - 14:00
+    1.2 12:00 - 14:00, 18:00 - 20:00
+    2.2 10:00 - 12:00, 22:00 - 24:00
+    Свою чергу можна дізнатися у чат-ботах
+  TEXT
+
+  def test_hours_become_the_intervals_they_name
+    parsed = Pure.parse_outage_text(POST)
+
+    assert_equal [13, 14], parsed['1.1'], '12:00-14:00 is hours 13 and 14'
+    assert_equal [13, 14, 19, 20], parsed['1.2']
+    assert_equal [11, 12, 23, 24], parsed['2.2'], 'midnight closes the day'
+  end
+
+  def test_prose_lines_are_ignored
+    refute_includes Pure.parse_outage_text(POST).keys, 'Свою'
+    assert_empty Pure.parse_outage_text('нічого корисного')
+  end
+
+  def test_the_title_carries_the_date
+    d = Pure.title_date('Графік ГПВ на 27 жовтня', Date.new(2026, 10, 27))
+
+    assert_equal Date.new(2026, 10, 27), d
+    assert_nil Pure.title_date('без дати')
+  end
+
+  # Titles carry no year, so a December post read in January must not
+  # land eleven months in the past.
+  def test_a_year_boundary_does_not_throw_the_date_backwards
+    d = Pure.title_date('Графік ГПВ на 31 грудня', Date.new(2027, 1, 2))
+
+    assert_equal 2026, d.year
+  end
+
+  def test_only_today_and_tomorrow_are_taken_and_the_newest_wins
+    today = "#{Date.today.strftime('%-d')} #{Pure::MONTHS[Date.today.month - 1]}"
+    items = [
+      { 'title' => "Графік погодинних відключень на #{today}", 'slug' => 'old',
+        'publishedAt' => (Time.now - 7200).iso8601 },
+      { 'title' => "Оновлено графік погодинних відключень на #{today}", 'slug' => 'new',
+        'publishedAt' => Time.now.iso8601 },
+      { 'title' => 'Новина про ремонт', 'slug' => 'noise',
+        'publishedAt' => Time.now.iso8601 }
+    ]
+    picked = Pure.newest_schedule_posts(items)
+
+    assert_equal 1, picked.size
+    assert_equal 'new', picked[Date.today].first
+  end
+
+  def test_rubbish_gives_nothing
+    assert_empty Pure.newest_schedule_posts('not a list')
+    assert_empty Pure.newest_schedule_posts([{ 'title' => 'x', 'slug' => '../etc' }])
+  end
+
+  def test_the_document_matches_what_the_rest_of_the_code_expects
+    doc = Pure.as_operator_schedule({ Date.today => { '1.1' => [13, 14] } },
+                                    Time.now)
+
+    assert Pure.valid_schedule?(doc)
+    hours = doc.dig('fact', 'data').values.first['GPV1.1']
+    assert_equal 'no', hours['13']
+    assert_equal 'yes', hours['1']
   end
 end
 

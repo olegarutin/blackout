@@ -242,8 +242,11 @@ def render
   # The mirror lands about twice a day. When the operator has already
   # published a newer revision, saying so beats showing a stale plan as
   # if it were today's.
-  mine = published_at(data)
-  theirs = fetch_revision(REGIONS.dig(REGION, 4))
+  # Pointless where we already read the operator's own site: nothing is
+  # fresher than the source, and the aggregator's pickup time is a few
+  # minutes later by definition, which would fire the warning forever.
+  mine = OPERATOR_POSTS.key?(REGION) ? nil : published_at(data)
+  theirs = mine && fetch_revision(REGIONS.dig(REGION, 4))
   if theirs && mine && theirs > mine
     puts "Оператор оновив графік о #{theirs.strftime('%H:%M')} — у нас ще старий | size=11 color=orange"
     site = REGIONS.dig(REGION, 3)

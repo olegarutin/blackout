@@ -16,6 +16,12 @@ UKRENERGO = 'https://t.me/s/Ukrenergo'
 # and a link. Its internal API, and the API payloads embedded in the
 # page, are not used: those it declared off limits.
 REGION_PAGE = 'https://alerts.energy/%s'
+
+# Operators that publish through their own site API, read first-hand.
+# The key is the region id; %s is the post slug.
+OPERATOR_POSTS = {
+  'Cherkasyoblenergo' => 'https://www.cherkasyoblenergo.com/api/v1/posts'
+}.freeze
 # Primary schedule source: explicit statuses instead of guesswork.
 # The mirrors stay as a second opinion.
 SHUTDOWNS = 'https://alerts.energy/api/v1/source-registry/areas/%s/shutdowns'
