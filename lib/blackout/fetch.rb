@@ -34,59 +34,14 @@ def recent_cache(path, max_age)
   read_cache(path)
 end
 
-# The grid's headline notice, or nil.
-def fetch_notice
-  ensure_dir(CACHE)
-  path = File.join(CACHE, 'notice.json')
-
-  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_NEWS
-    cached = read_cache(path)
-    return cached&.dig('breaking')
-  end
-
-  body, etag = http_get(NOTICE, read_etag(path))
-
-  if body.nil?
-    touch_cache(path)
-    return read_cache(path)&.dig('breaking')
-  end
-
-  latest = first_rss_item(body)
-  raise 'unexpected schema' unless latest
-
-  atomic_write(path, JSON.generate('breaking' => latest))
-  write_etag(path, etag)
-  latest
-rescue StandardError
-  File.exist?(path) ? read_cache(path)&.dig('breaking') : nil
-end
-
-# The newest entry of an RSS feed, as a plain hash. Parsed with a regex
-# rather than a library because the app carries no gems, and because the
-# shape needed here is three fields of the first <item>.
-def first_rss_item(xml)
-  item = xml[%r{<item>(.*?)</item>}m, 1]
-  return nil unless item
-
-  field = lambda do |tag|
-    raw = item[%r{<#{tag}>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</#{tag}>}m, 1]
-    unescape_xml(raw)
-  end
-
-  title = safe(field.call('title'))
-  return nil if title.empty?
-
-  { 'title' => title,
-    'excerpt' => safe(field.call('description')),
-    'link' => field.call('link').to_s,
-    'date' => field.call('pubDate').to_s }
-end
-
 def unescape_xml(str)
   return nil unless str
 
-  str.gsub('&lt;', '<').gsub('&gt;', '>').gsub('&quot;', '"')
-     .gsub('&#39;', "'").gsub('&apos;', "'").gsub('&amp;', '&')
+  str.gsub(/&#(\d{1,6});/) { Integer(Regexp.last_match(1)).chr(Encoding::UTF_8) }
+     .gsub('&lt;', '<').gsub('&gt;', '>').gsub('&quot;', '"')
+     .gsub('&apos;', "'").gsub('&amp;', '&')
+rescue StandardError
+  str
 end
 
 # Schedules from the primary source. nil hands the job to the mirror.
@@ -171,4 +126,29 @@ rescue StandardError
   # Nothing fresh arrived, or it failed validation — use the last known
   old = read_schedule(path)
   old ? [old, :stale] : [nil, :error]
+end
+
+# The operator's latest system-state notice, straight from the source.
+def fetch_grid
+  ensure_dir(CACHE)
+  path = File.join(CACHE, 'grid.json')
+
+  return read_cache(path) if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_NEWS
+
+  body, etag = http_get(UKRENERGO, read_etag(path))
+
+  if body.nil?
+    touch_cache(path)
+    return read_cache(path)
+  end
+
+  posts = telegram_posts(body)
+  raise 'no posts' if posts.empty?
+
+  latest = posts.last
+  atomic_write(path, JSON.generate(latest))
+  write_etag(path, etag)
+  latest
+rescue StandardError
+  recent_cache(path, GRID_MAX_AGE)
 end

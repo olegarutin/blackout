@@ -36,6 +36,18 @@ LIB    = File.expand_path('../lib', __dir__)
 SOURCE = (Dir[File.join(LIB, 'blackout', '*.rb')].sort + [PLUGIN])
          .map { |f| File.read(f, encoding: 'UTF-8') }.join("\n")
 
+# Tests must never reach the network. A deny marker makes http_get
+# refuse instantly, the same way a refused host would.
+DENY_KEYS = %w[t.me_s alerts.energy_api alerts.energy_rss.xml
+               raw.githubusercontent.com_yaroslav2901
+               raw.githubusercontent.com_Baskerville42
+               vadimklimenko.com_map].freeze
+
+def offline!(cache)
+  FileUtils.mkdir_p(cache)
+  DENY_KEYS.each { |k| FileUtils.touch(File.join(cache, "deny-#{k}")) }
+end
+
 # Lift pure functions out without running the plugin
 module Pure
   # Constants they lean on
@@ -49,7 +61,8 @@ module Pure
   %w[safe valid_schedule? hours_for segments minutes_until_change fmt
      siren_prefix as_schedule fmt_updated read_etag read_cache
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
-     published_at first_rss_item unescape_xml news_url].each do |name|
+     published_at unescape_xml news_url
+     telegram_posts telegram_text oblast_stem oblasts_named].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -215,6 +228,7 @@ class TestIntegration < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-test')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    offline!(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
     # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
@@ -231,8 +245,8 @@ class TestIntegration < Minitest::Test
 
   # Restriction levels per oblast. Without this the tests hit the network.
   def write_notice(title = nil)
-    write_cache('notice', title ? { 'breaking' => { 'title' => title, 'excerpt' => 'текст',
-                                                    'link' => 'https://alerts.energy/news/2026/10/14/s' } } : {})
+    write_cache('grid', title ? { 'text' => "#{title}\nтекст", 'at' => Time.now.utc.iso8601,
+                                  'link' => 'https://t.me/Ukrenergo/1' } : nil)
   end
 
   def write_energy(level = 2)
@@ -485,6 +499,7 @@ class TestEmergency < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-emergency')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    offline!(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
     # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
@@ -556,6 +571,7 @@ class TestDaySelection < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-day')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    offline!(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
     # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
@@ -598,6 +614,7 @@ class TestNotice < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-notice')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    offline!(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
     # An empty array means the primary source has nothing; mirror takes over
     File.write(File.join(@home, '.cache', 'blackout', 'sd-cherkaska-oblast.json'), '[]')
@@ -625,23 +642,24 @@ class TestNotice < Minitest::Test
   end
 
   def test_shows_the_notice
-    w('notice', 'breaking' => { 'title' => 'Обмеження 16:00-22:00', 'excerpt' => 'Через атаку',
-                                'link' => 'https://alerts.energy/news/2026/10/14/obmezhennia' })
+    w('grid', 'text' => "Обмеження 16:00-22:00\nЧерез атаку",
+              'at' => Time.now.utc.iso8601, 'link' => 'https://t.me/Ukrenergo/42')
     out = run_plugin
 
     assert_match(/📰 Обмеження 16:00-22:00/, out)
-    assert_match(%r{href=https://alerts.energy/news/2026/10/14/obmezhennia}, out)
+    assert_match(%r{href=https://t.me/Ukrenergo/42}, out)
   end
 
   def test_shows_nothing_without_a_notice
-    w('notice', {})
+    w('grid', nil)
     refute_match(/📰/, run_plugin)
   end
 
   def test_a_notice_from_the_network_is_sanitised
-    w('notice', 'breaking' => { 'title' => 'Атака | bash=/bin/sh', 'excerpt' => '' })
+    w('grid', 'text' => 'Атака | bash=/bin/sh', 'at' => Time.now.utc.iso8601)
     line = run_plugin.lines.find { |l| l.include?('📰') }
     _title, params = line.split('|', 2)
+
     refute_includes params.to_s, 'bash='
   end
 end
@@ -738,13 +756,13 @@ class TestParamInjection < Minitest::Test
   # it only strips '|'. A value from the network either passes a strict
   # check or is not printed at all.
   def notice(link)
-    File.write(File.join(@cache, 'notice.json'),
-               JSON.generate('breaking' => { 'title' => 'Новина', 'excerpt' => 'т',
-                                             'link' => link }))
+    File.write(File.join(@cache, 'grid.json'),
+               JSON.generate('text' => "СТАН ЕНЕРГОСИСТЕМИ\nКоротко.",
+                             'at' => Time.now.utc.iso8601, 'link' => link))
   end
 
   def test_a_notice_link_cannot_inject_a_parameter
-    notice('https://alerts.energy/news/x terminal=true bash=/bin/sh param1=-c')
+    notice('https://t.me/Ukrenergo/1 terminal=true bash=/bin/sh param1=-c')
     out = run_plugin
 
     refute_match(%r{bash=/bin/sh}, out, 'a link with spaces must not become a parameter')
@@ -753,14 +771,13 @@ class TestParamInjection < Minitest::Test
   end
 
   def test_an_ordinary_link_is_printed
-    notice('https://alerts.energy/news/2026/10/14/sytuatsiia-v-energosystemi')
+    notice('https://t.me/Ukrenergo/5581')
 
-    assert_match(%r{href=https://alerts.energy/news/2026/10/14/sytuatsiia-v-energosystemi},
-                 run_plugin)
+    assert_match(%r{href=https://t.me/Ukrenergo/5581}, run_plugin)
   end
 
   def test_a_link_to_another_host_is_refused
-    notice('https://evil.example/news/2026/10/14/looks-fine')
+    notice('https://evil.example/Ukrenergo/5581')
     out = run_plugin
 
     refute_match(/evil\.example/, out)
@@ -800,6 +817,7 @@ class TestCacheIntegrity < Minitest::Test
     @home = Dir.mktmpdir('blackout-cache')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
   end
 
@@ -887,6 +905,7 @@ class TestFreshestWins < Minitest::Test
     @home = Dir.mktmpdir('blackout-fresh')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     @day = Date.today
     @ts = Time.new(@day.year, @day.month, @day.day).to_i
@@ -971,6 +990,7 @@ class TestEmptySchedule < Minitest::Test
     @home = Dir.mktmpdir('blackout-empty')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     w('sd-cherkaska-oblast', [])
     w('alerts', 'states' => {})
@@ -1018,6 +1038,7 @@ class TestNoOutagesVsNoData < Minitest::Test
     @home = Dir.mktmpdir('blackout-nodata')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     w('sd-cherkaska-oblast', [])
     w('Cherkasyoblenergo', {})
@@ -1076,6 +1097,7 @@ class TestSourceLockedOut < Minitest::Test
     @home = Dir.mktmpdir('blackout-401')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     day = Date.today
     ts = Time.new(day.year, day.month, day.day).to_i
@@ -1138,53 +1160,57 @@ class TestSourceLockedOut < Minitest::Test
   end
 end
 
-# The source's llms.txt draws the line itself: pages and RSS are fair to
-# read, the internal API is not an interface for collecting data. So the
-# notice comes from the feed now, and the feed is XML, not JSON.
-class TestRssNotice < Minitest::Test
-  FEED = <<~XML
-    <rss><channel>
-    <item><title>Заходи обмеження споживання</title>
-    <link>https://alerts.energy/news/2026/10/27/zahody</link>
-    <description>У частині областей застосовуються обмеження.</description>
-    <pubDate>Tue, 27 Oct 2026 08:46:43 GMT</pubDate></item>
-    <item><title>Старіша новина</title>
-    <link>https://alerts.energy/news/2026/10/26/starisha</link>
-    <description>Не ця.</description></item>
-    </channel></rss>
-  XML
+# The transmission operator's own channel is the primary source for
+# system-state notices. Its website answers automated clients with a
+# Cloudflare challenge, including robots.txt, so this public page is
+# what is left — and it is where the aggregator's notices come from.
+class TestGridChannel < Minitest::Test
+  PAGE = <<~HTML
+    <div class="tgme_widget_message" data-post="Ukrenergo/5580">
+      <time datetime="2026-10-26T17:20:57+00:00"></time>
+      <div class="tgme_widget_message_text js-message_text">Старіший пост</div>
+    </div>
+    <div class="tgme_widget_message" data-post="Ukrenergo/5581">
+      <time datetime="2026-10-27T08:46:43+00:00"></time>
+      <div class="tgme_widget_message_text js-message_text">СТАН ЕНЕРГОСИСТЕМИ<br/>Внаслідок обстрілів є нові знеструмлення у Сумській, Харківській та Чернігівській областях.<br/>У Львівській області роботи завершено&#33;</div>
+    </div>
+  HTML
 
-  def test_takes_the_newest_item
-    item = Pure.first_rss_item(FEED)
+  def test_takes_the_newest_post_with_its_time_and_link
+    post = Pure.telegram_posts(PAGE).last
 
-    assert_equal 'Заходи обмеження споживання', item['title']
-    assert_match(/обмеження/, item['excerpt'])
-    assert_equal 'https://alerts.energy/news/2026/10/27/zahody', item['link']
+    assert_match(/СТАН ЕНЕРГОСИСТЕМИ/, post['text'])
+    assert_equal '2026-10-27T08:46:43+00:00', post['at']
+    assert_equal 'https://t.me/Ukrenergo/5581', post['link']
   end
 
-  def test_a_feed_without_items_gives_nothing
-    assert_nil Pure.first_rss_item('<rss><channel></channel></rss>')
-    assert_nil Pure.first_rss_item('not xml at all')
+  def test_numeric_entities_come_back_as_characters
+    refute_includes Pure.telegram_posts(PAGE).last['text'], '&#'
   end
 
-  def test_entities_come_back_as_characters
-    xml = '<rss><item><title>Світло &amp; тепло</title><link>x</link></item></rss>'
+  # The post names regions in several contexts. Only the ones it says
+  # lost power count — a region where repairs finished is not a warning.
+  def test_only_regions_named_as_de_energised_count
+    text = Pure.telegram_posts(PAGE).last['text']
+    names = ['Сумська область', 'Харківська область', 'Чернігівська область',
+             'Львівська область', 'Черкаська область']
+    named = Pure.oblasts_named(text, names)
 
-    assert_equal 'Світло & тепло', Pure.first_rss_item(xml)['title']
+    assert_includes named, 'Сумська область'
+    assert_includes named, 'Харківська область'
+    refute_includes named, 'Львівська область', 'repairs finished is not an outage'
+    refute_includes named, 'Черкаська область', 'not mentioned at all'
   end
 
-  def test_a_title_carrying_the_separator_is_stripped
-    xml = '<rss><item><title>X | bash=/bin/sh</title><link>y</link></item></rss>'
-
-    refute_includes Pure.first_rss_item(xml)['title'], '|'
+  # Oblast names arrive declined: "Харківська" is written "Харківській".
+  def test_declined_names_still_match
+    assert_equal 'Харківсь', Pure.oblast_stem('Харківська область')
+    assert_equal 'Київ', Pure.oblast_stem('м. Київ')
   end
 
-  def test_only_news_pages_on_that_host_become_links
-    assert Pure.news_url('https://alerts.energy/news/2026/10/27/ok')
-    assert_nil Pure.news_url('https://evil.example/news/2026/x')
-    assert_nil Pure.news_url('https://alerts.energy/account')
-    assert_nil Pure.news_url('https://alerts.energy/news/a b bash=/bin/sh')
-    assert_nil Pure.news_url(nil)
+  def test_rubbish_gives_nothing
+    assert_empty Pure.telegram_posts('<html>nothing here</html>')
+    assert_empty Pure.oblasts_named('', ['Сумська область'])
   end
 end
 
@@ -1195,6 +1221,7 @@ class TestTimezone < Minitest::Test
     @home = Dir.mktmpdir('blackout-tz')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     File.write(File.join(@home, '.config', 'blackout.json'),
                JSON.generate('region' => 'Cherkasyoblenergo', 'queue' => 'GPV1.1',
@@ -1237,6 +1264,7 @@ class TestFirstRun < Minitest::Test
   def setup
     @home = Dir.mktmpdir('blackout-first')
     FileUtils.mkdir_p(File.join(@home, '.cache', 'blackout'))
+    offline!(File.join(@home, '.cache', 'blackout'))
     FileUtils.mkdir_p(File.join(@home, '.config'))
   end
 
@@ -1257,8 +1285,10 @@ class TestFirstRun < Minitest::Test
 
   def test_the_picker_makes_no_network_calls
     out = run_plugin
-    assert_empty Dir.children(File.join(@home, '.cache', 'blackout')),
-                 'на екрані вибору запитів бути не повинно'
+    written = Dir.children(File.join(@home, '.cache', 'blackout'))
+                 .reject { |f| f.start_with?('deny-') }
+
+    assert_empty written, 'the picker must make no requests at all'
     assert_match(/Черкаська обл\./, out)
   end
 
@@ -1291,6 +1321,7 @@ class TestSymlinkSafety < Minitest::Test
     @home = Dir.mktmpdir('blackout-symlink')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     @victim = File.join(@home, 'victim.txt')
     File.write(@victim, "важливі дані\n")
@@ -1366,6 +1397,7 @@ class TestDistrict < Minitest::Test
     @home = Dir.mktmpdir('blackout-district')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     d = Date.today
     ts = Time.new(d.year, d.month, d.day).to_i
@@ -1464,6 +1496,7 @@ class TestOversizedData < Minitest::Test
     @home = Dir.mktmpdir('blackout-big')
     @cache = File.join(@home, '.cache', 'blackout')
     FileUtils.mkdir_p(@cache)
+    offline!(@cache)
     FileUtils.mkdir_p(File.join(@home, '.config'))
     d = Date.today
     @ts = Time.new(d.year, d.month, d.day).to_i

@@ -30,7 +30,8 @@ end
 # not a news page on that host simply is not shown.
 def news_url(str)
   v = str.to_s
-  v.match?(%r{\Ahttps://alerts\.energy/news/[\w./-]{1,160}\z}) ? v : nil
+  ok = %r{\Ahttps://(alerts\.energy/news|t\.me/[\w.-]{1,64})/[\w./-]{1,160}\z}
+  v.match?(ok) ? v : nil
 end
 
 def fmt_updated(str)

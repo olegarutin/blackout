@@ -46,6 +46,20 @@ def render
   # The oblast's restriction level: needed both for emergencies and to
   # explain a missing schedule. nil means we could not reach the source
   # at all, which is not the same as "no restrictions" — see blind?.
+  # The transmission operator names the oblasts it has just lost power
+  # in. That is not the same as the aggregator's restriction level, and
+  # it is not a per-queue state — but it comes from the operator itself
+  # and it answers the question the level used to: is my oblast having
+  # an ordinary scheduled day, or something worse.
+  grid = fetch_grid
+  # The channel is reachable only now and then from some networks, so a
+  # post can sit in the cache for a long time. Past half a day it is
+  # history, not a warning about this morning.
+  fresh_post = grid && grid['at'] &&
+               (Time.now - Time.parse(grid['at'])) < (12 * 3600)
+  hit = fresh_post &&
+        oblasts_named(grid['text'], [REGIONS.dig(REGION, 2)].compact).any?
+
   levels = fetch_energy
   area = (levels || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
   emergency = area && area['level'].to_i >= 3 ? safe(area['label']) : nil
@@ -56,7 +70,7 @@ def render
   if data.nil?
     no_schedule(alert, emergency, area, blind,
                 'Графіка немає',
-                'Оператор не публікує графіків для цієї області')
+                'Оператор не публікує графіків для цієї області', hit: hit)
     exit
   end
 
@@ -72,7 +86,7 @@ def render
     no_schedule(alert, emergency, area, blind,
                 'Актуального графіка немає',
                 'Джерело віддало порожній графік — відключення можливі',
-                data['lastUpdated'])
+                data['lastUpdated'], hit: hit)
     exit
   end
 
@@ -225,23 +239,25 @@ def render
   # from an emergency, when the schedule stops applying altogether. The
   # countdown above is only as good as that assumption, and saying so is
   # the whole difference between a guess and a lie.
-  if blind
+  if hit
+    puts 'Укренерго: у твоїй області нові знеструмлення після обстрілів | size=11 color=orange'
+    puts 'Ремонтні роботи тривають — графік може не діяти | size=11 color=gray'
+  elsif blind
     puts 'Аварійні відключення не перевіряються | size=11 color=orange'
-    puts 'Джерело статусу закрило доступ — графік може не діяти | size=11 color=gray'
   end
 
   render_alert(alert)
 
-  if (news = fetch_notice)
+  if (news = grid)
+    body = news['text'].to_s
     puts '---'
-    puts "📰 #{safe(news['title'])} | size=12 color=gray"
-    excerpt = safe(news['excerpt']).to_s
-    unless excerpt.empty?
-      puts "#{excerpt[0,
-                      150]}#{'…' if excerpt.length > 150} | size=11 color=gray length=90"
+    puts "📰 #{safe(body.lines.first)} | size=12 color=gray"
+    rest = safe(body.lines.drop(1).join(' '))
+    unless rest.empty?
+      puts "#{rest[0, 150]}#{'…' if rest.length > 150} | size=11 color=gray length=90"
     end
     link = news_url(news['link'])
-    puts "Читати на alerts.energy | size=11 color=gray href=#{link}" if link
+    puts "Читати в Укренерго | size=11 color=gray href=#{link}" if link
   end
 
   puts '---'

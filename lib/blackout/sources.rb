@@ -6,11 +6,10 @@ ALERTS = 'https://vadimklimenko.com/map/statuses.json'
 # Restriction level per oblast: 0 none, 2 hourly schedules, 3 emergency.
 # This is where "emergency" comes from — the schedules carry no such flag.
 ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
-# The grid operator's headline notice: the schedule says when, this says
-# why — an attack, a deficit, repairs. Read from the public RSS feed:
-# the source's own llms.txt names pages and RSS as fair to use, and the
-# internal API as not an interface for collecting data.
-NOTICE = 'https://alerts.energy/rss.xml'
+# The transmission operator's own public channel. Its website answers
+# automated clients with a Cloudflare challenge — even robots.txt — but
+# this page is served to anyone, and it is where the notices originate.
+UKRENERGO = 'https://t.me/s/Ukrenergo'
 # Primary schedule source: explicit statuses instead of guesswork.
 # The mirrors stay as a second opinion.
 SHUTDOWNS = 'https://alerts.energy/api/v1/source-registry/areas/%s/shutdowns'
@@ -24,3 +23,6 @@ TTL_ALERT = 55
 # worse than none: it would claim yesterday's answer about today. Past
 # this age we say we do not know instead of serving the cache.
 ENERGY_MAX_AGE = 1800
+
+# A notice older than this says nothing about now.
+GRID_MAX_AGE = 86_400
