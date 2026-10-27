@@ -63,8 +63,8 @@ end
 def api_key_for(host)
   return nil unless host == 'alerts.energy'
 
-  key = utf8(ENV['BLACKOUT_ENERGY_KEY']) || load_config['energy_key']
-  key.to_s.match?(/\A[\w.~+\/=-]{8,256}\z/) ? key.to_s : nil
+  key = utf8(ENV.fetch('BLACKOUT_ENERGY_KEY', nil)) || load_config['energy_key']
+  key.to_s.match?(%r{\A[\w.~+/=-]{8,256}\z}) ? key.to_s : nil
 end
 
 def load_config
