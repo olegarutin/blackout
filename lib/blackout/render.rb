@@ -295,7 +295,8 @@ def render
   puts '---'
   updated = fmt_updated(data.dig('fact', 'update') || data['lastUpdated'])
   mark = { cache: '', fresh: '', stale: '  (без мережі)' }[status]
-  puts "Оновлено: #{updated}#{mark} | size=11 color=gray"
+  ago = age_phrase(published_at(data))
+  puts "Оновлено: #{updated}#{" · #{ago}" if ago}#{mark} | size=11 color=gray"
 
   settings_menu((raw_days&.dig(today_key) || {}).keys)
 rescue Errno::EPIPE

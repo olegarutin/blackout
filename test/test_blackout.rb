@@ -62,7 +62,8 @@ module Pure
      siren_prefix as_schedule fmt_updated read_etag read_cache
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
      published_at unescape_xml news_url
-     telegram_posts telegram_text oblast_stem oblasts_named].each do |name|
+     telegram_posts telegram_text oblast_stem oblasts_named
+     age_phrase].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -1211,6 +1212,28 @@ class TestGridChannel < Minitest::Test
   def test_rubbish_gives_nothing
     assert_empty Pure.telegram_posts('<html>nothing here</html>')
     assert_empty Pure.oblasts_named('', ['Сумська область'])
+  end
+end
+
+# The mirrors commit about twice a day, so a schedule that looks like
+# today's plan can be half a day old and already superseded. The
+# timestamp alone did not say that; the age does.
+class TestAgePhrase < Minitest::Test
+  def test_recent_counts_as_just_now
+    assert_equal 'щойно', Pure.age_phrase(Time.now - 600)
+  end
+
+  def test_hours_are_spelled_out
+    assert_equal '12 год тому', Pure.age_phrase(Time.now - (12 * 3600))
+  end
+
+  def test_past_a_day_it_counts_days
+    assert_equal '2 дн. тому', Pure.age_phrase(Time.now - (50 * 3600))
+  end
+
+  def test_nothing_to_say_without_a_time
+    assert_nil Pure.age_phrase(nil)
+    assert_nil Pure.age_phrase(Time.now + 3600)
   end
 end
 

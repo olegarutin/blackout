@@ -43,6 +43,20 @@ rescue StandardError
   v
 end
 
+# How long ago a schedule was published. The mirrors commit about twice
+# a day, so what looks like today's plan can be twelve hours old and
+# already superseded — the timestamp alone did not make that obvious.
+def age_phrase(published)
+  return nil unless published
+
+  mins = ((Time.now - published) / 60).to_i
+  return nil if mins.negative?
+  return 'щойно' if mins < 60
+
+  hours = mins / 60
+  hours < 24 ? "#{hours} год тому" : "#{hours / 24} дн. тому"
+end
+
 def fmt(minutes)
   format('%d:%02d', minutes / 60, minutes % 60)
 end
