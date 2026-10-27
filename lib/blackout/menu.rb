@@ -82,7 +82,7 @@ end
 # Two screens say "no schedule" in the same shape: no data at all, and a
 # document with no days in it. The restriction level from the grid, when
 # there is one, explains the reason better than we could.
-def no_schedule(alert, emergency, area, headline, hint, updated = nil)
+def no_schedule(alert, emergency, area, blind, headline, hint, updated = nil)
   label = area && safe(area['label'])
   # The grid tells "no outages" and "we do not know" apart, and so should
   # we: dataState 'available' at a low level is good news, not a gap. It
@@ -109,6 +109,7 @@ def no_schedule(alert, emergency, area, headline, hint, updated = nil)
   puts "#{REGIONS.dig(REGION, 0) || REGION} | size=12 color=gray"
   puts "#{label || headline} | color=#{colour} size=14"
   puts "#{hint} | size=11 color=gray" unless emergency || settled
+  puts 'Статус аварійних не перевіряється — джерело закрило доступ | size=11 color=orange' if blind
   puts "Оновлено: #{fmt_updated(updated)} | size=11 color=gray" if updated
   render_alert(alert)
   settings_menu

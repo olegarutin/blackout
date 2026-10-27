@@ -58,6 +58,15 @@ rescue StandardError
   nil
 end
 
+# A key is read from the config or the environment, never printed, never
+# put in a menu item, and never written anywhere by us.
+def api_key_for(host)
+  return nil unless host == 'alerts.energy'
+
+  key = utf8(ENV['BLACKOUT_ENERGY_KEY']) || load_config['energy_key']
+  key.to_s.match?(/\A[\w.~+\/=-]{8,256}\z/) ? key.to_s : nil
+end
+
 def load_config
   File.exist?(CONFIG) ? JSON.parse(File.read(CONFIG, encoding: 'UTF-8')) : {}
 rescue StandardError

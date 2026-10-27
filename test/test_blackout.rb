@@ -1064,6 +1064,77 @@ class TestNoOutagesVsNoData < Minitest::Test
   end
 end
 
+# On 27 October the primary source started answering 401 for everyone.
+# Losing the schedule is survivable — mirrors cover it. Losing the
+# restriction level is not: without it an emergency day looks exactly
+# like an ordinary one, and the countdown becomes a confident lie.
+class TestSourceLockedOut < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-401')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    day = Date.today
+    ts = Time.new(day.year, day.month, day.day).to_i
+    hours = (1..24).to_h { |i| [i.to_s, 'yes'] }
+    w('Cherkasyoblenergo', 'fact' => { 'data' => { ts.to_s => { 'GPV1.1' => hours } },
+                                       'update' => Time.now.strftime('%d.%m.%Y %H:%M'),
+                                       'today' => ts })
+    w('sd-cherkaska-oblast', [])
+    w('alerts', 'states' => {})
+    w('notice', {})
+    # Pretend the host refused us, so no test ever reaches the network
+    FileUtils.touch(File.join(@cache, 'deny-alerts.energy'))
+  end
+
+  def teardown
+    FileUtils.remove_entry(@home)
+  end
+
+  def w(name, doc)
+    File.write(File.join(@cache, "#{name}.json"), JSON.generate(doc))
+  end
+
+  def run_plugin
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', PLUGIN).first
+  end
+
+  def test_says_it_cannot_check_for_emergencies
+    assert_match(/Аварійні відключення не перевіряються/, run_plugin)
+  end
+
+  def test_still_shows_the_schedule_from_the_mirror
+    out = run_plugin
+
+    assert_match(/Світло є/, out)
+    assert_match(/Сьогодні/, out)
+  end
+
+  def test_a_stale_level_cache_is_not_served_as_current
+    old = File.join(@cache, 'energy.json')
+    File.write(old, JSON.generate([{ 'name' => 'Черкаська область', 'level' => 3,
+                                     'dataState' => 'available',
+                                     'label' => 'Аварійні відключення' }]))
+    File.utime(Time.now - (3 * 3600), Time.now - (3 * 3600), old)
+    out = run_plugin
+
+    refute_match(/🚨/, out.lines.first, 'three-hour-old level claimed as current')
+    assert_match(/не перевіряються/, out)
+  end
+
+  def test_a_fresh_level_cache_is_still_used
+    File.write(File.join(@cache, 'energy.json'),
+               JSON.generate([{ 'name' => 'Черкаська область', 'level' => 3,
+                                'dataState' => 'available',
+                                'label' => 'Аварійні відключення' }]))
+    out = run_plugin
+
+    assert_match(/🚨/, out.lines.first)
+    refute_match(/не перевіряються/, out)
+  end
+end
+
 class TestTimezone < Minitest::Test
   ZONES = ['Europe/Kyiv', 'Europe/Lisbon', 'America/New_York', 'Asia/Tokyo', 'UTC'].freeze
 

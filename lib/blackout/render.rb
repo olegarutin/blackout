@@ -44,14 +44,17 @@ def render
   end
 
   # The oblast's restriction level: needed both for emergencies and to
-  # explain a missing schedule
-  area = (fetch_energy || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
+  # explain a missing schedule. nil means we could not reach the source
+  # at all, which is not the same as "no restrictions" — see blind?.
+  levels = fetch_energy
+  area = (levels || []).find { |a| a['name'] == REGIONS.dig(REGION, 2) }
   emergency = area && area['level'].to_i >= 3 ? safe(area['label']) : nil
+  blind = levels.nil?
 
   data, status = fetch_data(REGION)
 
   if data.nil?
-    no_schedule(alert, emergency, area,
+    no_schedule(alert, emergency, area, blind,
                 'Графіка немає',
                 'Оператор не публікує графіків для цієї області')
     exit
@@ -66,7 +69,7 @@ def render
   # green bulb — "power on" — which was the same lie as the timezone
   # one: a region with zero data and a cheerful light. No schedule is ❔.
   if day_keys.empty?
-    no_schedule(alert, emergency, area,
+    no_schedule(alert, emergency, area, blind,
                 'Актуального графіка немає',
                 'Джерело віддало порожній графік — відключення можливі',
                 data['lastUpdated'])
@@ -216,6 +219,15 @@ def render
            else 'Світла немає | color=red size=14'
            end)
     end
+  end
+
+  # Without the restriction level we cannot tell an ordinary schedule day
+  # from an emergency, when the schedule stops applying altogether. The
+  # countdown above is only as good as that assumption, and saying so is
+  # the whole difference between a guess and a lie.
+  if blind
+    puts 'Аварійні відключення не перевіряються | size=11 color=orange'
+    puts 'Джерело статусу закрило доступ — графік може не діяти | size=11 color=gray'
   end
 
   render_alert(alert)

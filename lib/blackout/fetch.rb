@@ -24,7 +24,14 @@ def fetch_energy
   write_etag(path, etag)
   parsed
 rescue StandardError
-  File.exist?(path) ? read_cache(path) : nil
+  recent_cache(path, ENERGY_MAX_AGE)
+end
+
+# A cache this old is no longer evidence about now.
+def recent_cache(path, max_age)
+  return nil unless File.exist?(path) && (Time.now - File.mtime(path)) < max_age
+
+  read_cache(path)
 end
 
 # The grid's headline notice, or nil.

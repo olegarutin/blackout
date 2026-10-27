@@ -17,3 +17,8 @@ TTL_NEWS = 600 # новини не міняються щохвилини
 # Alerts matter sooner, so they are checked every minute.
 TTL_DATA  = 170
 TTL_ALERT = 55
+
+# The restriction level drives the emergency warning, and a stale one is
+# worse than none: it would claim yesterday's answer about today. Past
+# this age we say we do not know instead of serving the cache.
+ENERGY_MAX_AGE = 1800
