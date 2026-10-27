@@ -293,7 +293,8 @@ class TestIntegration < Minitest::Test
     write_cache('alerts', { 'states' => {} })
     out, = run_plugin
     assert_match(/📅/, out.lines.first)
-    assert_match(/застаріл/i, out)
+    assert_match(/Свіжого графіка немає/, out)
+    assert_match(/90 дн\. тому/, out)
   end
 
   def test_yesterdays_schedule_is_unknown_not_stale

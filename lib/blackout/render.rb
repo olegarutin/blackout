@@ -200,9 +200,13 @@ def render
     puts "📅 #{day_date.strftime('%d.%m')}"
     puts '---'
     puts "#{region_name} · черга #{QUEUE.sub('GPV', '')} | size=12 color=gray"
-    puts 'Дані застарілі | color=red size=14'
-    puts "Графік за #{day_date.strftime('%d.%m.%Y')} — #{age} дн. тому | color=red size=12"
-    puts 'Джерело не оновлює цей регіон. Не покладайся на розклад нижче. | size=11 color=gray'
+    # Saying the source is broken was a guess, and usually the wrong
+    # one: these regions mostly have no outages at all, so there is
+    # nothing newer to publish. State what is known — the last schedule
+    # and its date — and leave the cause alone.
+    puts 'Свіжого графіка немає | color=orange size=14'
+    puts "Останній — за #{day_date.strftime('%d.%m.%Y')}, #{age} дн. тому | color=orange size=12"
+    puts 'Відтоді оператор нічого не публікував. Розклад нижче — той старий. | size=11 color=gray'
   else
     # During an emergency the schedule does not apply, so a countdown
     # based on it would be dishonest
