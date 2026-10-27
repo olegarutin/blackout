@@ -50,3 +50,19 @@ def oblasts_named(text, names)
     !stem.empty? && said.include?(stem)
   end
 end
+
+# "Графік оновлено: 27.10, 10:49 за київським часом" — the one fact we
+# take from the region page, so the app can tell when the mirror it
+# reads is behind what the operator has already published.
+def page_revised_at(html)
+  m = html.to_s.gsub(%r{<(script|style).*?</\1>}m, '')
+          .gsub(/<[^>]+>/, ' ')
+          .match(/Графік\s+оновлено:\s*(\d{1,2})\.(\d{1,2}),\s*(\d{1,2}):(\d{2})/)
+  return nil unless m
+
+  day, month, hour, minute = m.captures.map(&:to_i)
+  year = Date.today.year
+  Time.new(year, month, day, hour, minute)
+rescue StandardError
+  nil
+end

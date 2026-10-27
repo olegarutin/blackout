@@ -152,3 +152,25 @@ def fetch_grid
 rescue StandardError
   recent_cache(path, GRID_MAX_AGE)
 end
+
+# When the operator last revised this region's schedule, according to
+# the aggregator's public page. Used only to compare against what the
+# mirror holds — never as schedule data.
+def fetch_revision(slug)
+  return nil unless slug
+
+  ensure_dir(CACHE)
+  path = File.join(CACHE, "rev-#{slug}.txt")
+
+  if File.exist?(path) && (Time.now - File.mtime(path)) < TTL_DATA
+    cached = File.read(path, encoding: 'UTF-8').strip
+    return cached.empty? ? nil : Time.parse(cached)
+  end
+
+  body, = http_get(format(REGION_PAGE, slug))
+  at = page_revised_at(body)
+  atomic_write(path, at ? at.iso8601 : '')
+  at
+rescue StandardError
+  nil
+end

@@ -63,7 +63,7 @@ module Pure
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
      published_at unescape_xml news_url
      telegram_posts telegram_text oblast_stem oblasts_named
-     age_phrase].each do |name|
+     age_phrase page_revised_at].each do |name|
     body = SOURCE[/^def #{Regexp.escape(name)}(?![\w?!]).*?\n^end$/m]
     raise "не знайдено метод #{name}" unless body
 
@@ -1234,6 +1234,31 @@ class TestAgePhrase < Minitest::Test
   def test_nothing_to_say_without_a_time
     assert_nil Pure.age_phrase(nil)
     assert_nil Pure.age_phrase(Time.now + 3600)
+  end
+end
+
+# The mirrors land about twice a day, so the operator can already have
+# published a newer revision. One line of a public page says when —
+# which the source's own llms.txt allows citing, unlike its API.
+class TestPageRevision < Minitest::Test
+  def test_reads_the_revision_time
+    page = '<p>Графік оновлено: 27.10, 10:49 за київським часом.</p>'
+    at = Pure.page_revised_at(page)
+
+    assert_equal [27, 10, 10, 49], [at.day, at.month, at.hour, at.min]
+  end
+
+  def test_markup_and_scripts_do_not_confuse_it
+    page = '<script>var x="Графік оновлено: 01.01, 00:00";</script>' \
+           '<div><b>Графік</b> оновлено: 27.10, 10:49 за київським</div>'
+
+    assert_equal 10, Pure.page_revised_at(page).hour
+  end
+
+  def test_a_page_without_the_line_gives_nothing
+    assert_nil Pure.page_revised_at('<p>нічого</p>')
+    assert_nil Pure.page_revised_at(nil)
+    assert_nil Pure.page_revised_at('Графік оновлено: 99.99, 99:99')
   end
 end
 

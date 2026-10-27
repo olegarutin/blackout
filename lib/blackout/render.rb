@@ -239,6 +239,17 @@ def render
   # from an emergency, when the schedule stops applying altogether. The
   # countdown above is only as good as that assumption, and saying so is
   # the whole difference between a guess and a lie.
+  # The mirror lands about twice a day. When the operator has already
+  # published a newer revision, saying so beats showing a stale plan as
+  # if it were today's.
+  mine = published_at(data)
+  theirs = fetch_revision(REGIONS.dig(REGION, 4))
+  if theirs && mine && theirs > mine
+    puts "Оператор оновив графік о #{theirs.strftime('%H:%M')} — у нас ще старий | size=11 color=orange"
+    site = REGIONS.dig(REGION, 3)
+    puts "Перевірити в обленерго | size=11 color=gray#{" href=#{site}" if site}"
+  end
+
   if hit
     puts 'Укренерго: у твоїй області нові знеструмлення після обстрілів | size=11 color=orange'
     puts 'Ремонтні роботи тривають — графік може не діяти | size=11 color=gray'

@@ -10,6 +10,12 @@ ENERGY = 'https://alerts.energy/api/v1/source-registry/areas/overview'
 # automated clients with a Cloudflare challenge — even robots.txt — but
 # this page is served to anyone, and it is where the notices originate.
 UKRENERGO = 'https://t.me/s/Ukrenergo'
+# One line of a public region page: when the operator last revised the
+# schedule. The aggregator's llms.txt permits using its public pages for
+# summarising and citing with a link, which is exactly this — one fact
+# and a link. Its internal API, and the API payloads embedded in the
+# page, are not used: those it declared off limits.
+REGION_PAGE = 'https://alerts.energy/%s'
 # Primary schedule source: explicit statuses instead of guesswork.
 # The mirrors stay as a second opinion.
 SHUTDOWNS = 'https://alerts.energy/api/v1/source-registry/areas/%s/shutdowns'
