@@ -19,6 +19,9 @@ require 'minitest/autorun'
 require 'json'
 require 'date'
 require 'time'
+require 'tmpdir'
+require 'fileutils'
+require 'open3'
 
 require_relative '../lib/blackout'
 
@@ -130,5 +133,63 @@ class TestMalformedStructures < Minitest::Test
       assert_kind_of Array, telegram_posts(p)
       assert_nil page_revised_at(p) if p.valid_encoding?
     end
+  end
+end
+
+# Local conditions must cost their own feature, never the menu. An
+# unwritable cache used to take the whole render down with it, and an
+# unwritable config printed a Ruby backtrace into the menu bar.
+class TestDiskTroubleIsNotFatal < Minitest::Test
+  def setup
+    @home = Dir.mktmpdir('blackout-disk')
+    @cache = File.join(@home, '.cache', 'blackout')
+    FileUtils.mkdir_p(@cache)
+    FileUtils.mkdir_p(File.join(@home, '.config'))
+    day = Date.today
+    ts = Time.new(day.year, day.month, day.day).to_i
+    hours = (1..24).to_h { |h| [h.to_s, 'yes'] }
+    File.write(File.join(@cache, 'Cherkasyoblenergo.json'),
+               JSON.generate('fact' => { 'data' => { ts.to_s => { 'GPV1.1' => hours } },
+                                         'update' => Time.now.strftime('%d.%m.%Y %H:%M'),
+                                         'today' => ts }))
+    File.write(File.join(@cache, 'alerts.json'), '{"states":{}}')
+    %w[t.me_s alerts.energy_api alerts.energy_cherkaska-oblast
+       raw.githubusercontent.com_yaroslav2901 www.cherkasyoblenergo.com_api
+       vadimklimenko.com_map].each { |k| FileUtils.touch(File.join(@cache, "deny-#{k}")) }
+  end
+
+  def teardown
+    FileUtils.chmod(0o700, @cache)
+    FileUtils.chmod(0o700, File.join(@home, '.config'))
+    FileUtils.remove_entry(@home)
+  end
+
+  def run_plugin(*args)
+    plugin = File.expand_path('../plugin/blackout.1m.rb', __dir__)
+    Open3.capture3({ 'HOME' => @home, 'BLACKOUT_REGION' => 'Cherkasyoblenergo',
+                     'BLACKOUT_QUEUE' => 'GPV1.1' }, 'ruby', plugin, *args)
+  end
+
+  def test_a_read_only_cache_still_shows_the_schedule
+    FileUtils.chmod(0o500, @cache)
+    out, = run_plugin
+
+    assert_match(/Світло є/, out)
+    refute_match(/Несподівана помилка/, out)
+  end
+
+  def test_a_read_only_config_says_so_in_one_line
+    FileUtils.chmod(0o500, File.join(@home, '.config'))
+    out, err = run_plugin('--warn', '30')
+
+    assert_match(/Не вдалося зберегти/, out)
+    refute_match(/blackout.*\.rb:\d+/, out + err, 'a backtrace must not reach the menu')
+  end
+
+  def test_no_variation_selectors_in_that_message
+    FileUtils.chmod(0o500, File.join(@home, '.config'))
+    out, = run_plugin('--warn', '30')
+
+    refute_includes out, "\uFE0F", 'U+FE0F draws as a tofu box'
   end
 end

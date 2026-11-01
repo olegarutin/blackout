@@ -73,9 +73,15 @@ rescue StandardError
   {}
 end
 
+# A full disk or a read-only directory must not end in a Ruby
+# backtrace: the host prints whatever comes out, and a stack trace in
+# the menu bar helps nobody. Returns whether the setting was kept.
 def save_config(cfg)
   ensure_dir(File.dirname(CONFIG))
   atomic_write(CONFIG, JSON.pretty_generate(cfg))
+  true
+rescue StandardError
+  false
 end
 
 def load_state
@@ -84,7 +90,12 @@ rescue StandardError
   {}
 end
 
+# State only remembers which notification already went out. Losing it
+# costs a repeated banner at worst — never the menu, which is what
+# happened when an unwritable cache took the whole render down with it.
 def save_state(state)
   ensure_dir(CACHE)
   atomic_write(STATE, JSON.generate(state))
+rescue StandardError
+  nil
 end

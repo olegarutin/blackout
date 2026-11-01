@@ -20,25 +20,38 @@ SELF = File.expand_path(__FILE__)
 
 cfg = load_config
 
+# Every switch below writes the config. If that is impossible, say so in
+# the one line the menu-bar host will show, and leave the setting alone.
+def keep(cfg)
+  return if save_config(cfg)
+
+  # No variation selector: U+FE0F draws as a tofu box in the menu-bar
+  # font, which this project has already been bitten by once.
+  puts '❌'
+  puts '---'
+  puts 'Не вдалося зберегти налаштування | color=red size=13'
+  puts "Немає доступу на запис у #{File.dirname(CONFIG)} | size=11 color=gray"
+end
+
 case ARGV[0]
 when '--set'
   exit unless REGIONS.key?(utf8(ARGV[1])) && utf8(ARGV[2]).to_s.match?(/\AGPV\d{1,3}\.\d{1,2}\z/)
 
   cfg['region'] = utf8(ARGV[1])
   cfg['queue']  = utf8(ARGV[2])
-  save_config(cfg)
+  keep(cfg)
   exit
 when '--warn'
   cfg['warn_minutes'] = ARGV[1].to_i.clamp(1, 720)
-  save_config(cfg)
+  keep(cfg)
   exit
 when '--notify'
   cfg['notify'] = (ARGV[1] == 'on')
-  save_config(cfg)
+  keep(cfg)
   exit
 when '--alerts'
   cfg['alerts'] = (ARGV[1] == 'on')
-  save_config(cfg)
+  keep(cfg)
   exit
 when '--district'
   # An empty value means the whole oblast. The district name comes from
@@ -47,7 +60,7 @@ when '--district'
   exit unless d.empty? || d.match?(/\A[\p{L}\p{Zs}'’-]{3,60}\z/)
 
   cfg['district'] = d.empty? ? nil : d
-  save_config(cfg)
+  keep(cfg)
   exit
 end
 
