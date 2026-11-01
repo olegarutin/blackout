@@ -33,7 +33,11 @@ end
 def parse_outage_text(text)
   # Sites put a non-breaking space between the queue and its hours, and
   # \s does not match one. Normalise before matching.
-  text.to_s.scrub('').tr("\u00A0\u2009\u202F", ' ').each_line.with_object({}) do |line, acc|
+  # A real post lists a dozen queues. Two megabytes of them — which the
+  # response cap still allows — took over two seconds to walk, every
+  # time the menu redrew.
+  text.to_s.scrub('').tr("\u00A0\u2009\u202F", ' ')
+      .each_line.first(500).each_with_object({}) do |line, acc|
     span = /\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}/
     m = line.match(/\A\s*(\d{1,2}\.\d{1,2})\s+(#{span}(?:\s*,\s*#{span})*)/)
     next unless m

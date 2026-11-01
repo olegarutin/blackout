@@ -53,6 +53,9 @@ jobs:
       - name: Tests
         run: ruby test/test_blackout.rb
 
+      - name: Attacks
+        run: ruby test/security_test.rb
+
   lint:
     runs-on: ubuntu-latest
 

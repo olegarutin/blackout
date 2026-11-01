@@ -14,7 +14,12 @@ def safe(str, limit = 200)
   # scrub before anything else: an invalid byte makes every later match
   # raise. Control characters go too — a NUL or an escape sequence in a
   # menu item is never something a source meant to send.
-  v = str.to_s.scrub('').delete("\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F")
+  # Bidi overrides and zero-width characters go with the control ones:
+  # they are invisible in a menu item but reorder or hide what it says,
+  # and nothing a schedule source sends needs them.
+  v = str.to_s.scrub('')
+         .delete("\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F")
+         .delete("\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF")
          .delete('|').gsub(/[[:space:]]+/, ' ').strip
   v.length > limit ? "#{v[0, limit]}…" : v
 end
