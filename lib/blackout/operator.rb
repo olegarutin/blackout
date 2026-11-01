@@ -41,6 +41,10 @@ def parse_outage_text(text)
     hours = m[2].scan(/(\d{1,2}):\d{2}\s*[-–—]\s*(\d{1,2}):\d{2}/).flat_map do |from, to|
       start = from.to_i
       finish = to.to_i.zero? ? 24 : to.to_i
+      # A garbled line must cost its own interval, not the whole region:
+      # out-of-range hours would fail validation and void the document.
+      next [] unless start.between?(0, 23) && finish.between?(1, 24) && finish > start
+
       ((start + 1)..finish).to_a
     end
     acc[m[1]] = hours.uniq.sort unless hours.empty?

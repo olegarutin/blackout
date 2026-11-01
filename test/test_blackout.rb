@@ -1287,6 +1287,16 @@ class TestOperatorSource < Minitest::Test
     assert_equal [11, 12, 23, 24], parsed['2.2'], 'midnight closes the day'
   end
 
+  # A garbled line must cost its own interval, not the whole region:
+  # hours outside 1..24 would fail validation and void the document.
+  def test_impossible_hours_are_dropped_not_propagated
+    text = "1.1 12:00 - 14:00\n9.9 00:00 - 99:99\n2.1 25:00 - 26:00\n3.1 14:00 - 10:00\n"
+    parsed = Pure.parse_outage_text(text)
+
+    assert_equal ['1.1'], parsed.keys, 'only the sound line survives'
+    assert(parsed.values.flatten.all? { |h| (1..24).cover?(h) })
+  end
+
   def test_prose_lines_are_ignored
     refute_includes Pure.parse_outage_text(POST).keys, 'Свою'
     assert_empty Pure.parse_outage_text('нічого корисного')
