@@ -8,7 +8,7 @@
 
 # Messages of a channel's public page, newest last.
 def telegram_posts(html, limit = 6)
-  html.to_s.split(/<div class="tgme_widget_message[ "]/).drop(1).last(limit).filter_map do |chunk|
+  html.to_s.scrub('').split(/<div class="tgme_widget_message[ "]/).drop(1).last(limit).filter_map do |chunk|
     body = chunk[%r{class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>}m, 1]
     next unless body
 
@@ -22,7 +22,8 @@ end
 # Telegram wraps its text in markup and escapes entities; line breaks
 # carry meaning here, so they survive as newlines until safe() is called.
 def telegram_text(body)
-  unescape_xml(body.gsub(%r{<br\s*/?>}, "\n").gsub(/<[^>]+>/, '')).to_s.strip
+  unescape_xml(body.to_s.scrub('').gsub(%r{<br\s*/?>}, "\n")
+                   .gsub(/<[^>]+>/, '')).to_s.strip
 end
 
 # An oblast is named in running prose, so it arrives declined:
@@ -40,7 +41,7 @@ end
 def oblasts_named(text, names)
   # Split on line breaks as well as sentence ends: the post is a list of
   # bullet lines, and a run-on split swallowed whole paragraphs.
-  said = text.to_s.split(/(?<=[.!?])\s+|\n+/)
+  said = text.to_s.scrub('').split(/(?<=[.!?])\s+|\n+/)
              .grep(/знеструмлен|без світла/i)
              .join(' ')
   return [] if said.empty?
@@ -55,7 +56,7 @@ end
 # take from the region page, so the app can tell when the mirror it
 # reads is behind what the operator has already published.
 def page_revised_at(html)
-  m = html.to_s.gsub(%r{<(script|style).*?</\1>}m, '')
+  m = html.to_s.scrub('').gsub(%r{<(script|style).*?</\1>}m, '')
           .gsub(/<[^>]+>/, ' ')
           .match(/Графік\s+оновлено:\s*(\d{1,2})\.(\d{1,2}),\s*(\d{1,2}):(\d{2})/)
   return nil unless m

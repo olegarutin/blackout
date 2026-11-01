@@ -32,7 +32,7 @@ end
 
 # Reading the cache can fail on a damaged file too
 def read_cache(path)
-  JSON.parse(File.read(path, encoding: 'UTF-8'))
+  JSON.parse(File.read(path, encoding: 'UTF-8').scrub(''))
 rescue StandardError
   nil
 end

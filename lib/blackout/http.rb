@@ -68,9 +68,12 @@ def http_get(url, etag = nil)
         raise 'response too large' if body.bytesize > MAX_BODY
       end
 
-      # Net::HTTP returns ASCII-8BIT; tag it UTF-8 so the cache write
-      # and the JSON parse behave predictably
-      return [body.force_encoding(Encoding::UTF_8), res['etag']]
+      # Net::HTTP returns ASCII-8BIT; tag it UTF-8 so the cache write and
+      # the JSON parse behave predictably. scrub matters as much as the
+      # tag: one malformed byte anywhere in a response made every later
+      # regex raise ArgumentError, and the whole menu became an error
+      # screen. A source that serves rubbish should cost its own line.
+      return [body.force_encoding(Encoding::UTF_8).scrub(''), res['etag']]
     end
   end
 end

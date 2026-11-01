@@ -11,7 +11,11 @@ end
 # both. Length is capped as well: a 100 KB headline would otherwise
 # stretch the menu across the screen.
 def safe(str, limit = 200)
-  v = str.to_s.delete('|').gsub(/[[:space:]]+/, ' ').strip
+  # scrub before anything else: an invalid byte makes every later match
+  # raise. Control characters go too — a NUL or an escape sequence in a
+  # menu item is never something a source meant to send.
+  v = str.to_s.scrub('').delete("\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F")
+         .delete('|').gsub(/[[:space:]]+/, ' ').strip
   v.length > limit ? "#{v[0, limit]}…" : v
 end
 

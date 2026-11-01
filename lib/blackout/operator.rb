@@ -33,7 +33,7 @@ end
 def parse_outage_text(text)
   # Sites put a non-breaking space between the queue and its hours, and
   # \s does not match one. Normalise before matching.
-  text.to_s.tr("\u00A0\u2009\u202F", ' ').each_line.with_object({}) do |line, acc|
+  text.to_s.scrub('').tr("\u00A0\u2009\u202F", ' ').each_line.with_object({}) do |line, acc|
     span = /\d{1,2}:\d{2}\s*[-–—]\s*\d{1,2}:\d{2}/
     m = line.match(/\A\s*(\d{1,2}\.\d{1,2})\s+(#{span}(?:\s*,\s*#{span})*)/)
     next unless m

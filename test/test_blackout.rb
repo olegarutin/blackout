@@ -1349,6 +1349,35 @@ class TestOperatorSource < Minitest::Test
   end
 end
 
+# A single malformed byte anywhere in a response used to make every
+# later regex raise ArgumentError, and the whole menu became an error
+# screen. A source that serves rubbish should cost its own line.
+class TestMalformedBytes < Minitest::Test
+  BAD = "\xC3\x28\xFF\xFE Новина\u0000\u001B[31m".dup.force_encoding('UTF-8')
+
+  def test_safe_survives_and_strips_control_characters
+    out = Pure.safe(BAD)
+
+    assert_predicate out, :valid_encoding?
+    refute_includes out, "\u0000"
+    refute_includes out, "\u001B"
+    assert_includes out, 'Новина'
+  end
+
+  def test_every_parser_survives_invalid_bytes
+    assert_empty Pure.parse_outage_text(BAD)
+    assert_empty Pure.oblasts_named(BAD, ['Сумська область'])
+    assert_empty Pure.telegram_posts(BAD)
+    assert_nil Pure.page_revised_at(BAD)
+  end
+
+  def test_sound_text_still_parses_after_scrubbing
+    text = "\xFF 1.1 12:00 - 14:00\n2.1 10:00 - 12:00\n".dup.force_encoding('UTF-8')
+
+    assert_equal [11, 12], Pure.parse_outage_text(text)['2.1']
+  end
+end
+
 class TestTimezone < Minitest::Test
   ZONES = ['Europe/Kyiv', 'Europe/Lisbon', 'America/New_York', 'Asia/Tokyo', 'UTC'].freeze
 
