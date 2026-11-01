@@ -22,7 +22,9 @@ end
 
 def deny_path(uri)
   ensure_dir(CACHE)
-  FileUtils.touch(deny_marker(uri))
+  marker = deny_marker(uri)
+  FileUtils.touch(marker)
+  File.chmod(0o600, marker)
 rescue StandardError
   nil
 end
