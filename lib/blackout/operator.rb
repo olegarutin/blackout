@@ -54,14 +54,14 @@ end
 # The operator's text, reshaped into the document the rest of the code
 # already understands, so nothing downstream needs to know the source.
 def as_operator_schedule(days, published)
-  data = days.filter_map do |date, queues|
+  data = days.map do |date, queues|
     next if queues.empty?
 
     groups = queues.to_h do |queue, off|
       ["GPV#{queue}", (1..24).to_h { |h| [h.to_s, off.include?(h) ? 'no' : 'yes'] }]
     end
     [date.to_time.to_i.to_s, groups]
-  end.to_h
+  end.compact.to_h
   return nil if data.empty?
 
   { 'lastUpdated' => published&.iso8601,

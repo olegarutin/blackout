@@ -8,7 +8,10 @@
 
 # Messages of a channel's public page, newest last.
 def telegram_posts(html, limit = 6)
-  html.to_s.scrub('').split(/<div class="tgme_widget_message[ "]/).drop(1).last(limit).filter_map do |chunk|
+  # map + compact rather than filter_map: the floor is Ruby 2.6, which
+  # ships with macOS, and filter_map arrived in 2.7.
+  html.to_s.scrub('').split(/<div class="tgme_widget_message[ "]/)
+      .drop(1).last(limit).map do |chunk|
     body = chunk[%r{class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>}m, 1]
     next unless body
 
@@ -16,7 +19,7 @@ def telegram_posts(html, limit = 6)
     { 'text' => telegram_text(body),
       'at' => chunk[/datetime="([^"]+)"/, 1],
       'link' => post && "https://t.me/#{post}" }
-  end
+  end.compact
 end
 
 # Telegram wraps its text in markup and escapes entities; line breaks

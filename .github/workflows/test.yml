@@ -39,6 +39,17 @@ jobs:
           count=$(find plugin -type f | wc -l | tr -d ' ')
           test "$count" = "1" || { echo "plugin/ has $count files, expected 1"; find plugin -type f; exit 1; }
 
+      # Methods newer than the floor pass the linter and pass on 3.4;
+      # only loading the library on 2.6 catches them. filter_map got
+      # through this way.
+      - name: Library loads and runs on this Ruby
+        run: |
+          ruby -e 'require "./lib/blackout"
+                   abort "telegram" if telegram_posts(%q{<div class="tgme_widget_message" data-post="a/1"><div class="tgme_widget_message_text">x</div></div>}).empty?
+                   abort "operator" unless parse_outage_text("1.1 12:00 - 14:00")["1.1"] == [13, 14]
+                   abort "schedule" unless valid_schedule?(as_operator_schedule({ Date.today => { "1.1" => [13] } }, Time.now))
+                   abort "safe" unless safe("a | b") == "a b"'
+
       - name: Tests
         run: ruby test/test_blackout.rb
 
