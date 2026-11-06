@@ -42,10 +42,15 @@ end
 def settings_menu(known_groups = nil)
   puts 'Налаштування | size=11 color=gray'
 
-  puts "--Область: #{REGIONS.dig(REGION, 0) || REGION} | size=11"
+  # These two titles must not change between runs. SwiftBar 2.1.1 patches
+  # a retitled submenu parent in place and wipes its submenu action, so
+  # "Область: X" went grey after the first pick and the pickers were
+  # locked until a restart (fixed upstream in swiftbar/SwiftBar#518).
+  # The current choice is still in sight: the ✓ inside and the header.
+  puts '--Область | size=11'
   region_picker('----')
 
-  puts "--Черга: #{QUEUE.sub('GPV', '')} | size=11"
+  puts '--Черга | size=11'
   queue_picker('----', known_groups)
   site = REGIONS.dig(REGION, 3)
   puts "--Не знаю свою чергу | size=11#{" href=#{site}" if site}"
