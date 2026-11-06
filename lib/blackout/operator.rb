@@ -28,8 +28,10 @@ rescue StandardError
   nil
 end
 
-# "1.1 12:00 - 14:00, 18:00 - 20:00" per line, one line per queue.
-# Returns queue => the hours it is off, as 1..24 where N means [N-1, N).
+# "1.1 12:00 - 14:30, 18:00 - 20:00" per line, one line per queue.
+# Returns queue => the half hours it is off, as 1..48 where N means the
+# half hour ending at N * 30 minutes. Minutes off the half-hour grid
+# widen the outage rather than narrow it: the safer mistake.
 def parse_outage_text(text)
   # Sites put a non-breaking space between the queue and its hours, and
   # \s does not match one. Normalise before matching.
@@ -42,16 +44,29 @@ def parse_outage_text(text)
     m = line.match(/\A\s*(\d{1,2}\.\d{1,2})\s+(#{span}(?:\s*,\s*#{span})*)/)
     next unless m
 
-    hours = m[2].scan(/(\d{1,2}):\d{2}\s*[-–—]\s*(\d{1,2}):\d{2}/).flat_map do |from, to|
-      start = from.to_i
-      finish = to.to_i.zero? ? 24 : to.to_i
+    span_parts = /(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})/
+    slots = m[2].scan(span_parts).flat_map do |fh, fm, th, tm|
       # A garbled line must cost its own interval, not the whole region:
-      # out-of-range hours would fail validation and void the document.
-      next [] unless start.between?(0, 23) && finish.between?(1, 24) && finish > start
+      # out-of-range times would fail validation and void the document.
+      next [] unless fm.to_i < 60 && tm.to_i < 60
+
+      start = ((fh.to_i * 60) + fm.to_i) / SLOT_MINUTES
+      finish = ((th.to_i * 60) + tm.to_i + SLOT_MINUTES - 1) / SLOT_MINUTES
+      finish = 48 if finish.zero?
+      next [] unless start.between?(0, 47) && finish.between?(1, 48) && finish > start
 
       ((start + 1)..finish).to_a
     end
-    acc[m[1]] = hours.uniq.sort unless hours.empty?
+    acc[m[1]] = slots.uniq.sort unless slots.empty?
+  end
+end
+
+# The source format's word for an hour with these halves dark
+def hour_value(first_off, second_off)
+  if first_off && second_off then 'no'
+  elsif first_off then 'first'
+  elsif second_off then 'second'
+  else 'yes'
   end
 end
 
@@ -62,7 +77,8 @@ def as_operator_schedule(days, published)
     next if queues.empty?
 
     groups = queues.to_h do |queue, off|
-      ["GPV#{queue}", (1..24).to_h { |h| [h.to_s, off.include?(h) ? 'no' : 'yes'] }]
+      hours = (1..24).to_h { |h| [h.to_s, hour_value(off.include?((2 * h) - 1), off.include?(2 * h))] }
+      ["GPV#{queue}", hours]
     end
     [date.to_time.to_i.to_s, groups]
   end.compact.to_h

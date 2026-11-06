@@ -53,14 +53,15 @@ end
 # Lift pure functions out without running the plugin
 module Pure
   # Constants they lean on
-  %w[HOUR_VALUES MONTHS].each do |const|
+  %w[HOUR_VALUES HALVES MONTHS].each do |const|
     body = SOURCE[/^#{const}\s*=.*?freeze$/m]
     raise "не знайдено константу #{const}" unless body
 
     module_eval(body)
   end
+  module_eval(SOURCE[/^SLOT_MINUTES = \d+$/] || raise('не знайдено константу SLOT_MINUTES'))
 
-  %w[safe valid_schedule? hours_for segments minutes_until_change fmt
+  %w[safe valid_schedule? slots_for slot_of slot_time hour_value segments minutes_until_change fmt
      siren_prefix as_schedule fmt_updated read_etag read_cache
      atomic_write touch_cache ensure_dir read_schedule valid_rows?
      published_at unescape_xml news_url
@@ -150,31 +151,45 @@ class TestHoursFor < Minitest::Test
   end
 
   def test_hour_n_is_the_interval_before_it
-    # key "22" in the source means 21:00-22:00
-    h = Pure.hours_for(doc((1..24).to_h { |i| [i.to_s, i == 22 ? 'no' : 'yes'] }), 'GPV1.1', 'd')
-    refute h[21], 'індекс 21 має бути без світла'
-    assert h[20]
-    assert h[22]
+    # key "22" in the source means 21:00-22:00, which is slots 42 and 43
+    h = Pure.slots_for(doc((1..24).to_h { |i| [i.to_s, i == 22 ? 'no' : 'yes'] }), 'GPV1.1', 'd')
+    assert_equal 48, h.size
+    refute h[42], '21:00–21:30 має бути без світла'
+    refute h[43], '21:30–22:00 має бути без світла'
+    assert h[41]
+    assert h[44]
   end
 
-  def test_first_counts_as_no_power
-    h = Pure.hours_for(doc('1' => 'first'), 'GPV1.1', 'd')
-    refute h[0]
+  # A queue lit 11:00–12:30 used to show as 11:00–12:00: the half-dark
+  # hour counted as dark whole
+  def test_half_hours_keep_their_lit_half
+    h = Pure.slots_for(doc('12' => 'yes', '13' => 'second', '14' => 'first'), 'GPV1.1', 'd')
+    assert h[24], '12:00–12:30 світло є'
+    refute h[25], '12:30–13:00 світла немає'
+    refute h[26], '13:00–13:30 світла немає'
+    assert h[27], '13:30–14:00 світло є'
   end
 
   def test_unknown_queue
-    assert_nil Pure.hours_for(doc('1' => 'yes'), 'GPV9.9', 'd')
+    assert_nil Pure.slots_for(doc('1' => 'yes'), 'GPV9.9', 'd')
   end
 end
 
 class TestSegments < Minitest::Test
-  def test_groups_equal_hours
-    hours = ([true] * 3) + ([false] * 2) + ([true] * 19)
-    assert_equal [[0, 3, true], [3, 5, false], [5, 24, true]], Pure.segments(hours)
+  def test_groups_equal_slots
+    slots = ([true] * 3) + ([false] * 2) + ([true] * 43)
+    assert_equal [[0, 3, true], [3, 5, false], [5, 48, true]], Pure.segments(slots)
   end
 
   def test_a_whole_day_is_one_segment
-    assert_equal [[0, 24, true]], Pure.segments([true] * 24)
+    assert_equal [[0, 48, true]], Pure.segments([true] * 48)
+  end
+
+  def test_slot_boundaries_read_as_clock_times
+    assert_equal '00:00', Pure.slot_time(0)
+    assert_equal '12:30', Pure.slot_time(25)
+    assert_equal '24:00', Pure.slot_time(48)
+    assert_equal 25, Pure.slot_of(Time.new(2026, 10, 8, 12, 45))
   end
 end
 
@@ -184,18 +199,23 @@ class TestMinutesUntilChange < Minitest::Test
   end
 
   def test_counts_to_the_change_today
-    today = ([true] * 16) + ([false] * 8)
+    today = ([true] * 32) + ([false] * 16)
     assert_equal 120, Pure.minutes_until_change(today, nil, at(14, 0))
   end
 
+  def test_counts_to_a_change_on_the_half_hour
+    today = ([true] * 25) + ([false] * 23)
+    assert_equal 20, Pure.minutes_until_change(today, nil, at(12, 10))
+  end
+
   def test_rolls_over_to_tomorrow
-    today = [true] * 24
-    tomorrow = [false] * 24
+    today = [true] * 48
+    tomorrow = [false] * 48
     assert_equal 60, Pure.minutes_until_change(today, tomorrow, at(23, 0))
   end
 
   def test_no_change_at_all
-    assert_nil Pure.minutes_until_change([true] * 24, [true] * 24, at(12, 0))
+    assert_nil Pure.minutes_until_change([true] * 48, [true] * 48, at(12, 0))
   end
 end
 
@@ -284,6 +304,35 @@ class TestIntegration < Minitest::Test
     assert_equal 0, st.exitstatus
     assert_empty err
     assert_match(/💡/, out)
+  end
+
+  # The user's case: lit 11:00–12:30, not 11:00–12:00
+  def test_a_half_hour_shows_in_the_schedule
+    hours = (1..24).to_h { |i| [i.to_s, 'no'] }
+    hours['12'] = 'yes'
+    hours['13'] = 'second'
+    write_cache('Cherkasyoblenergo', schedule(hours: hours))
+    write_energy
+    write_notice
+    write_cache('alerts', { 'states' => {} })
+    out, = run_plugin
+    assert_match(/● +11:00 – 12:30/, out)
+    assert_match(/○ +12:30 – 24:00/, out)
+  end
+
+  # SwiftBar 2.1.1 greys out a submenu parent whose title changed between
+  # runs, which locked the pickers after the first choice
+  def test_picker_titles_do_not_depend_on_the_choice
+    write_cache('Cherkasyoblenergo', schedule)
+    write_energy
+    write_notice
+    write_cache('alerts', { 'states' => {} })
+    first, = run_plugin
+    second, = run_plugin('BLACKOUT_QUEUE' => 'GPV2.2')
+    parents = ->(out) { out.lines.grep(/\A--[^-]/).map { |l| l.split('|').first } }
+    assert_includes parents.call(first), '--Черга '
+    assert_includes parents.call(first), '--Область '
+    assert_equal parents.call(first), parents.call(second)
   end
 
   def test_stale_data_is_labelled
@@ -493,9 +542,9 @@ class TestHourValues < Minitest::Test
   def test_power_is_on_only_for_yes
     # Partial and possible outages both count as "no power"
     %w[no first second maybe mfirst msecond].each do |v|
-      h = Pure.hours_for({ 'fact' => { 'data' => { 'd' => { 'GPV1.1' => { '1' => v } } } } },
+      h = Pure.slots_for({ 'fact' => { 'data' => { 'd' => { 'GPV1.1' => { '1' => v } } } } },
                          'GPV1.1', 'd')
-      refute h[0], "значення #{v} не має рахуватись як світло"
+      refute h[0] && h[1], "значення #{v} не має рахуватись як світло"
     end
   end
 end
@@ -704,6 +753,14 @@ class TestShutdownsSource < Minitest::Test
     h = d['fact']['data'].values.first['GPV1.1']
     assert_equal 'no', h['11'], 'має бути графік обленерго'
     assert_equal 'yes', h['16'], 'не має бути графік залізниці'
+  end
+
+  def test_two_and_three_are_half_hour_outages
+    rs = rows
+    rs[0]['today'] = ([0] * 10) + [1, 2] + ([0] * 7) + [3, 1] + ([0] * 3)
+    h = built(rs)['fact']['data'].values.first['GPV1.1']
+    assert_equal 'first', h['12'], '2 — без світла перші пів години'
+    assert_equal 'second', h['20'], '3 — без світла другі пів години'
   end
 
   def test_possible_becomes_maybe
@@ -1279,12 +1336,29 @@ class TestOperatorSource < Minitest::Test
     Свою чергу можна дізнатися у чат-ботах
   TEXT
 
-  def test_hours_become_the_intervals_they_name
+  def test_times_become_the_half_hours_they_name
     parsed = Pure.parse_outage_text(POST)
 
-    assert_equal [13, 14], parsed['1.1'], '12:00-14:00 is hours 13 and 14'
-    assert_equal [13, 14, 19, 20], parsed['1.2']
-    assert_equal [11, 12, 23, 24], parsed['2.2'], 'midnight closes the day'
+    assert_equal [25, 26, 27, 28], parsed['1.1'], '12:00-14:00 is half hours 25 to 28'
+    assert_equal [25, 26, 27, 28, 37, 38, 39, 40], parsed['1.2']
+    assert_equal [21, 22, 23, 24, 45, 46, 47, 48], parsed['2.2'], 'midnight closes the day'
+  end
+
+  def test_half_hours_survive_the_operator_text
+    parsed = Pure.parse_outage_text("3.1 12:30 - 14:00\n3.2 10:00 - 11:30\n")
+
+    assert_equal [26, 27, 28], parsed['3.1']
+    assert_equal [21, 22, 23], parsed['3.2']
+    doc = Pure.as_operator_schedule({ Date.today => parsed }, Time.now)
+    hours = doc.dig('fact', 'data').values.first
+    assert_equal 'second', hours['GPV3.1']['13'], '12:30 — світло до пів на першу'
+    assert_equal 'first', hours['GPV3.2']['12'], '11:30 — світло з пів на дванадцяту'
+  end
+
+  # Off-grid minutes widen the outage: saying "no power" a little early
+  # beats a dark room the menu called lit
+  def test_off_grid_minutes_round_outwards
+    assert_equal [25, 26, 27], Pure.parse_outage_text('1.1 12:10 - 13:20')['1.1']
   end
 
   # A garbled line must cost its own interval, not the whole region:
@@ -1294,7 +1368,7 @@ class TestOperatorSource < Minitest::Test
     parsed = Pure.parse_outage_text(text)
 
     assert_equal ['1.1'], parsed.keys, 'only the sound line survives'
-    assert(parsed.values.flatten.all? { |h| (1..24).cover?(h) })
+    assert(parsed.values.flatten.all? { |h| (1..48).cover?(h) })
   end
 
   def test_prose_lines_are_ignored
@@ -1339,7 +1413,7 @@ class TestOperatorSource < Minitest::Test
   end
 
   def test_the_document_matches_what_the_rest_of_the_code_expects
-    doc = Pure.as_operator_schedule({ Date.today => { '1.1' => [13, 14] } },
+    doc = Pure.as_operator_schedule({ Date.today => { '1.1' => [25, 26, 27, 28] } },
                                     Time.now)
 
     assert Pure.valid_schedule?(doc)
@@ -1374,7 +1448,7 @@ class TestMalformedBytes < Minitest::Test
   def test_sound_text_still_parses_after_scrubbing
     text = "\xFF 1.1 12:00 - 14:00\n2.1 10:00 - 12:00\n".dup.force_encoding('UTF-8')
 
-    assert_equal [11, 12], Pure.parse_outage_text(text)['2.1']
+    assert_equal [21, 22, 23, 24], Pure.parse_outage_text(text)['2.1']
   end
 end
 

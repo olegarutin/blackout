@@ -106,8 +106,8 @@ def render
   # and the source is simply dead.
   unknown = stale && age <= 2
 
-  today    = hours_for(data, QUEUE, today_key)
-  tomorrow = tomorrow_key ? hours_for(data, QUEUE, tomorrow_key) : nil
+  today    = slots_for(data, QUEUE, today_key)
+  tomorrow = tomorrow_key ? slots_for(data, QUEUE, tomorrow_key) : nil
 
   # During an emergency a queue often has no schedule at all; saying
   # "queue missing" would send the reader looking for a fault
@@ -136,20 +136,23 @@ def render
   end
 
   now  = Time.now
-  on   = today[now.hour]
+  on   = today[slot_of(now)]
   left = minutes_until_change(today, tomorrow, now)
 
   # ── Change detection and warnings ───────────────────────────────────
 
   state = load_state
   key = "#{REGION}/#{QUEUE}/#{today_key}"
+  # Half-hour slots hash differently from the old whole hours, so they get
+  # a field of their own: comparing across the two would announce a
+  # rewritten schedule to everyone on the first run after the update.
   digest = Digest::SHA256.hexdigest(today.map { |b| b ? '1' : '0' }.join)
 
   if NOTIFY && !stale
     # 1. Today's schedule was rewritten
-    if state['key'] == key && state['digest'] && state['digest'] != digest
+    if state['key'] == key && state['slots_digest'] && state['slots_digest'] != digest
       changed = segments(today).reject { |_, _, lit| lit }
-                               .map { |f, t, _| format('%02d–%02d', f, t) }.join(', ')
+                               .map { |f, t, _| "#{slot_time(f)}–#{slot_time(t)}" }.join(', ')
       notify('Графік змінився', "Черга #{QUEUE.sub('GPV', '')} · без світла: #{changed}")
     end
 
@@ -178,7 +181,7 @@ def render
   end
 
   state['key'] = key
-  state['digest'] = digest
+  state['slots_digest'] = digest
   save_state(state)
 
   # ── Menu bar ────────────────────────────────────────────────────────
@@ -288,9 +291,9 @@ def render
   segments(today).each do |from, to, lit|
     next if today.all?
 
-    here = !stale && (from..(to - 1)).cover?(now.hour) ? '  ←' : ''
-    puts format('%s  %02d:00 – %02d:00%s | color=%s font=Menlo size=13',
-                lit ? '●' : '○', from, to, here, lit ? 'green' : 'red')
+    here = !stale && (from..(to - 1)).cover?(slot_of(now)) ? '  ←' : ''
+    puts format('%s  %s – %s%s | color=%s font=Menlo size=13',
+                lit ? '●' : '○', slot_time(from), slot_time(to), here, lit ? 'green' : 'red')
   end
 
   puts '---'
@@ -303,8 +306,8 @@ def render
     puts '● Відключень немає | color=green size=13 font=Menlo'
   else
     segments(tomorrow).each do |from, to, lit|
-      puts format('%s  %02d:00 – %02d:00 | color=%s font=Menlo size=13',
-                  lit ? '●' : '○', from, to, lit ? 'green' : 'red')
+      puts format('%s  %s – %s | color=%s font=Menlo size=13',
+                  lit ? '●' : '○', slot_time(from), slot_time(to), lit ? 'green' : 'red')
     end
   end
 

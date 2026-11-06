@@ -46,8 +46,8 @@ jobs:
         run: |
           ruby -e 'require "./lib/blackout"
                    abort "telegram" if telegram_posts(%q{<div class="tgme_widget_message" data-post="a/1"><div class="tgme_widget_message_text">x</div></div>}).empty?
-                   abort "operator" unless parse_outage_text("1.1 12:00 - 14:00")["1.1"] == [13, 14]
-                   abort "schedule" unless valid_schedule?(as_operator_schedule({ Date.today => { "1.1" => [13] } }, Time.now))
+                   abort "operator" unless parse_outage_text("1.1 12:00 - 14:30")["1.1"] == [25, 26, 27, 28, 29]
+                   abort "schedule" unless valid_schedule?(as_operator_schedule({ Date.today => { "1.1" => [25, 26, 27] } }, Time.now))
                    abort "safe" unless safe("a | b") == "a b"'
 
       - name: Tests

@@ -5,6 +5,20 @@
 # the validator would reject an otherwise valid file.
 HOUR_VALUES = %w[yes no first second maybe mfirst msecond].freeze
 
+# What each value means for the two halves of its hour, as
+# [first half lit, second half lit]. 'first' is an outage in the first
+# thirty minutes only. Possible outages count as no power: erring in
+# that direction is the safer mistake.
+HALVES = {
+  'yes' => [true, true], 'no' => [false, false], 'maybe' => [false, false],
+  'first' => [false, true], 'mfirst' => [false, true],
+  'second' => [true, false], 'msecond' => [true, false]
+}.freeze
+
+# The schedule is kept in half hours: a queue lit from 11:00 to 12:30 was
+# shown as 11:00 – 12:00, because a half-dark hour counted as dark whole.
+SLOT_MINUTES = 30
+
 # Until a region's real queues are known, offer the usual six by two.
 DEFAULT_GROUPS = (1..6).flat_map { |q| (1..2).map { |sub| "GPV#{q}.#{sub}" } }.freeze
 
@@ -69,10 +83,14 @@ def as_schedule(rows)
 
       maybe = r["#{slot}Possible"]
       maybe = [] unless maybe.is_a?(Array)
+      # 2 and 3 are half-hour outages: matched against the mirrors on
+      # the same day, 2 ends a block half an hour in, 3 starts one at :30
       group["GPV#{r['queue']}"] = (0..23).to_h do |i|
-        v = if hrs[i].to_i == 1 then 'no'
-            elsif maybe[i].to_i == 1 then 'maybe'
-            else 'yes'
+        v = case hrs[i].to_i
+            when 1 then 'no'
+            when 2 then 'first'
+            when 3 then 'second'
+            else maybe[i].to_i == 1 ? 'maybe' : 'yes'
             end
         [(i + 1).to_s, v]
       end
@@ -107,32 +125,41 @@ rescue StandardError
   nil
 end
 
-# Hour N in the source is the interval [N-1, N)
-def hours_for(data, queue, day_key)
+# Hour N in the source is the interval [N-1, N). The result has one
+# entry per half hour: index i is [i * 30 min, (i + 1) * 30 min).
+# A missing or unknown hour counts as no power, like a partial one.
+def slots_for(data, queue, day_key)
   raw = data.dig('fact', 'data', day_key, queue)
   return nil unless raw
 
-  # Power is on only for 'yes'. Everything else is an outage — full,
-  # partial or possible — and all of those count as "no power", because
-  # erring in that direction is the safer mistake.
-  (1..24).map { |h| raw[h.to_s] == 'yes' }
+  (1..24).flat_map { |h| HALVES.fetch(raw[h.to_s], [false, false]) }
 end
 
-def segments(hours)
-  hours.each_with_index.chunk_while { |(a, _), (b, _)| a == b }
+# The half hour that `time` falls into
+def slot_of(time)
+  ((time.hour * 60) + time.min) / SLOT_MINUTES
+end
+
+# Slot boundary as a clock time; slot 48 is the end of the day, 24:00
+def slot_time(slot)
+  format('%02d:%02d', slot * SLOT_MINUTES / 60, slot * SLOT_MINUTES % 60)
+end
+
+def segments(slots)
+  slots.each_with_index.chunk_while { |(a, _), (b, _)| a == b }
        .map { |chunk| [chunk.first[1], chunk.last[1] + 1, chunk.first[0]] }
 end
 
 def minutes_until_change(today, tomorrow, now)
-  idx = now.hour
+  idx = slot_of(now)
   state = today[idx]
   elapsed = (now.hour * 60) + now.min
 
-  ((idx + 1)..23).each { |h| return (h * 60) - elapsed if today[h] != state }
+  ((idx + 1)...today.size).each { |s| return (s * SLOT_MINUTES) - elapsed if today[s] != state }
   return nil unless tomorrow
 
-  (0..23).each do |h|
-    return ((24 * 60) - elapsed) + (h * 60) if tomorrow[h] != state
+  tomorrow.each_with_index do |lit, s|
+    return ((24 * 60) - elapsed) + (s * SLOT_MINUTES) if lit != state
   end
   nil
 end
