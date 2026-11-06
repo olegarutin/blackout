@@ -1022,6 +1022,23 @@ class TestFreshestWins < Minitest::Test
     refute_match(/10:00 – 12:00/, out, 'липневий файл переміг сьогоднішні дані')
   end
 
+  # The operator's own post for today, as fetch_operator caches it
+  def seed_operator(text, published)
+    doc = Pure.as_operator_schedule({ @day => Pure.parse_outage_text(text) }, published)
+    w('op-Cherkasyoblenergo', doc)
+  end
+
+  # 6 November: the mirror committed later to add tomorrow, still holding
+  # today's evening revision the operator had rewritten in the morning
+  def test_the_operators_day_beats_a_later_mirror_commit
+    seed_operator('1.1 11:30 - 16:00', Time.now - (12 * 3600))
+    seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))
+    out = run_plugin
+
+    assert_match(/○  11:30 – 16:00/, out, 'узято вечірню редакцію дзеркала замість ранкової оператора')
+    refute_match(/10:00 – 12:00/, out)
+  end
+
   def test_updated_is_publication_time_not_poll_time
     seed_primary((Time.now - (14 * 3600)).utc.iso8601)
     seed_github(Time.now.strftime('%d.%m.%Y %H:%M'))

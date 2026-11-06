@@ -94,11 +94,28 @@ def fetch_data(region)
   # operator's own site usually wins — it is where the others read from
   # — but only on the timestamp, so a broken scrape cannot promote
   # itself past a mirror that is actually newer.
-  found = [[primary, :fresh], [github, status], [fetch_operator(region), :fresh]]
+  operator = fetch_operator(region)
+  found = [[primary, :fresh], [github, status], [operator, :fresh]]
           .select { |doc, _| doc }
   return [nil, :error] if found.empty?
 
-  found.max_by { |doc, _| published_at(doc) || Time.at(0) }
+  doc, status = found.max_by { |d, _| published_at(d) || Time.at(0) }
+  operator && !doc.equal?(operator) ? [with_operator_days(doc, operator), status] : [doc, status]
+end
+
+# A whole document carries one publication time, but its days do not
+# share it. On 6 November the mirror committed at 20:05 to add the next
+# day, still holding the evening revision of today that the operator had
+# rewritten at 07:48 — and being newer, it won the whole document, so the
+# menu showed the old hours all day. The mirrors copy the operator's own
+# posts, so a day the operator posted is taken from the operator.
+def with_operator_days(doc, operator)
+  own = operator.dig('fact', 'data')
+  return doc unless own.is_a?(Hash)
+
+  days = doc.dig('fact', 'data')
+  days = {} unless days.is_a?(Hash)
+  doc.merge('fact' => (doc['fact'] || {}).merge('data' => days.merge(own)))
 end
 
 def fetch_from_github(region)
